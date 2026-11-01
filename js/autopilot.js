@@ -1,6 +1,8 @@
 // コンピュータ管制: プレイヤーの代わりに 2 秒ごとに状況を見て、普通のコマンドで指示を出す
 //   出発: 滑走路ごとに間隔をあけて離陸させ、出口高度まで上昇、出口 Fix へ向かわせる
-//   到着: 前の機体と十分な間隔が取れるときだけ進入許可。取れなければ STAR の終点で待機 (高度を 1000ft ずつ積む)
+//   到着: 滑走路の手前 90NM ほどで着陸の順番を決め、前の機体との時間の間隔が足りない分は遠いうちに減速で吸収する。
+//         減速で吸収しきれない分だけ、STAR の途中の Fix で待機させる。順番が来て間隔が取れていれば進入許可
+//         (それでも詰まったら、従来どおり STAR の終点で待機。高度を 1000ft ずつ積む)
 //   間隔: 同じ滑走路で詰まったら後ろを減速。90 秒先までに接近しそうな組は、片方の上昇・降下を止めるか 1000ft 離す
 window.ATC = window.ATC || {};
 (function (ATC) {
@@ -10,8 +12,15 @@ window.ATC = window.ATC || {};
 
   const EVERY = 2;           // 判断する間隔(秒)
   const LEVEL_HOLD = 45;      // 衝突回避で止めた高度を保つ時間(秒)
-  const ARR_SPACING = 10;     // 進入許可を出すときに必要な、前の機体との残り距離の差(NM)
-  const CLEAR_WITHIN = 70;    // 滑走路までの残り距離がこれ以下になったら進入許可を考える(NM)
+  const MIN_SPACING = 5;      // 進入許可を出すときに最低限必要な、進入中の機体との残り距離の差(NM)
+  const CLEAR_WITHIN = 45;    // 滑走路までの残り距離がこれ以下になったら進入許可を考える(NM)
+  const SEQ_WITHIN = 90;      // 残り距離がこれ以下になったら着陸の順番を決める(NM)
+  const SEP_ARR_ONLY = 110;   // 着陸の間隔 (到着専用の滑走路)(秒)
+  const SEP_MIXED = 170;      // 着陸の間隔 (離陸にも使う滑走路。間に離陸を入れる)(秒)
+  const MIN_SPD = 220;        // 遅れを吸収するときの最低速度(kt)。ILS に乗れる 210kt より速く (許可前に勝手に乗らないように)
+  const CRUISE_SPD = 280;
+  const CLEAR_DELAY_OK = 20;  // 残りの遅れがこれ以下なら進入許可を出してよい(秒)
+  const HOLD_MARGIN = 40;     // 減速で吸収できる量をこれ以上超える遅れがあれば、途中の Fix で待機(秒)
   const STACK_WITHIN = 60;    // 残り距離がこれ以下になったら待機用の高度へ降ろし始める(NM)
   const TRAIL_SLOW = 7;       // 同じ滑走路で前との差がこれより詰まったら減速(NM)
   const TOO_CLOSE = 3;        // これより詰まったら後ろの機体を復行させる(NM)
@@ -23,6 +32,8 @@ window.ATC = window.ATC || {};
   const CONFLICT_NM = 4.5;
 
   const roundDown = (v) => Math.floor(v / 100) * 100;
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const segmentsCross = (p, q, r, s) => cross(p, q, r) * cross(p, q, s) < 0 && cross(r, s, p) * cross(r, s, q) < 0;
   const roundUp = (v) => Math.ceil(v / 100) * 100;
 
   class Auto {
@@ -116,7 +127,9 @@ window.ATC = window.ATC || {};
       }
       let d = 0, p = ac;
       const tailPts = [rw.faf, rw.bases[1], rw.bases[-1]];
-      const pts = ac.hold ? [ac.hold.fix] : ac.directs.filter((f) => !tailPts.includes(f));
+      // 待機中は待機の Fix から (STAR の途中で待機していれば、その先の経路も足す)
+      const hf = ac.hold && ac.hold.fix;
+      const pts = [...(hf ? [hf] : []), ...ac.directs.filter((f) => !tailPts.includes(f) && f !== hf)];
       for (const f of pts) { d += G.dist(p, f); p = f; }
       for (const f of game.approachTail(rw, p === ac ? ac : p)) { d += G.dist(p, f); p = f; }
       return d + G.dist(p, rw.app) + rw.app.extra;
@@ -127,6 +140,153 @@ window.ATC = window.ATC || {};
     laneKey(game, rw) {
       const parallel = game.activeArrivalRunways(rw.apt).every((r) => Math.abs(G.angleDiff(r.app.course, rw.app.course)) < 3);
       return parallel ? rw.key : rw.apt;
+    }
+
+    // 遅れのない標準の速度 (滑走路までの残り距離ごと)。到着予定時刻の計算に使う
+    static nominalSpd(s) { return s < 8 ? 160 : s < 20 ? 210 : s < 40 ? 250 : CRUISE_SPD; }
+
+    // 残り距離 d を標準の速度で飛んだときにかかる時間(秒)
+    static eta(d) {
+      const edges = [0, 8, 20, 40, Infinity];
+      let t = 0;
+      for (let i = 0; i < 4 && d > edges[i]; i++) t += (Math.min(d, edges[i + 1]) - edges[i]) * 3600 / Auto.nominalSpd(edges[i]);
+      return t;
+    }
+
+    // 残り距離 d から最低速度で飛んで吸収できる遅れ(秒)。滑走路の 20NM 手前からは速度を変えない
+    static absorbable(d) {
+      const edges = [20, 40, Infinity];
+      let t = 0;
+      for (let i = 0; i < 2 && d > edges[i]; i++) {
+        t += (Math.min(d, edges[i + 1]) - edges[i]) * 3600 * (1 / MIN_SPD - 1 / Auto.nominalSpd(edges[i]));
+      }
+      return t;
+    }
+
+    separation(game, rw) {
+      const mixed = game.activeArrivalRunways(rw.apt).some((r) => this.laneKey(game, r) === this.laneKey(game, rw) &&
+        (game.config.airports[r.apt].dep || []).includes(r.id));
+      return mixed ? SEP_MIXED : SEP_ARR_ONLY;
+    }
+
+    // STAR を s に切り替えたときの、滑走路までの経路の長さ (assignStar と同じく、近い Fix から乗る)
+    starDist(game, ac, s) {
+      const plan = s.plan;
+      let i = 0;
+      for (let k = 1; k < plan.length; k++) if (G.dist(ac, plan[k]) < G.dist(ac, plan[i])) i = k;
+      if (i < plan.length - 1 && G.dist(ac, plan[i + 1]) < G.dist(plan[i], plan[i + 1])) i++;
+      const rw = game.runway(s.dest, s.rwy);
+      let d = 0, p = ac;
+      for (const f of [...plan.slice(i), ...game.approachTail(rw, plan[plan.length - 1])]) { d += G.dist(p, f); p = f; }
+      return d + G.dist(p, rw.app) + rw.app.extra;
+    }
+
+    // 標準到着経路の終点から先 (進入方式の経路と最終進入への寄せ) が、同じ空港のほかの滑走路の最終進入 (FAF より内側) を横切るか。
+    // 横切る経路 (羽田の南風で KAIHO→22 の LDA Y は 23 の最終進入を横切る) は、ほかに選べる経路があれば使わない
+    crossesOtherFinal(game, s) {
+      const rw = game.runway(s.dest, s.rwy);
+      const last = s.plan[s.plan.length - 1];
+      const path = [last, ...game.approachTail(rw, last), rw.app];
+      return game.activeArrivalRunways(s.dest).some((r) => r !== rw &&
+        path.slice(1).some((q, i) => segmentsCross(path[i], q, r.faf, r.app)));
+    }
+
+    // 着陸の順番 (AMAN)。滑走路の列ごとに、順番を決めた時の着陸予定時刻 (seqT) の順に並べ、
+    // 前の機体から決まった時間ずつあけた枠を割り当てる。枠と今の到着予定との差が、吸収しなければならない遅れ
+    sequence(game, arr) {
+      const lanes = {}, info = new Map(), fresh = [];
+      const laneOf = (rw) => (lanes[this.laneKey(game, rw)] = lanes[this.laneKey(game, rw)] || []);
+      for (const ac of arr) {
+        // 復行・進入中止の直後は順番を決め直す
+        if (ac.gaCooldown > 0 && !ac.ils && !ac.approach) ac.seqT = null;
+        const rw = ac.ils || ac.approach || this.plannedRunway(game, ac);
+        if (!rw) continue;
+        const d = this.distToGo(game, ac, rw);
+        const w = { ac, rw, d, eta: Auto.eta(d), delay: 0, prev: null };
+        info.set(ac, w);
+        if (ac.seqT != null) laneOf(rw).push(w);
+        else if (d <= SEQ_WITHIN && ac.gaCooldown <= 0) fresh.push(w);
+      }
+      const schedule = (lane) => {
+        lane.sort((a, b) => a.ac.seqT - b.ac.seqT);
+        let prev = null;
+        for (const w of lane) {
+          w.slot = prev ? Math.max(w.eta, prev.slot + this.separation(game, w.rw)) : w.eta;
+          w.delay = w.slot - w.eta;
+          w.prev = prev;
+          prev = w;
+        }
+      };
+      Object.values(lanes).forEach(schedule);
+      // 新しく順番に入る機体: 標準到着経路が選べるなら、いちばん早く降りられるもの (同じくらいなら主な経路) にする。
+      // 選ぶのは最初の 1 回だけ (復行後に選び直すと、経路の手前の Fix へ引き返してしまう)
+      fresh.sort((a, b) => a.eta - b.eta);
+      for (const w of fresh) {
+        const { ac } = w;
+        const active = game.activeArrivalRunways(ac.dest);
+        let best = null;
+        const options = ac.autoStar ? [] : game.starOptions(ac)
+          .filter((s) => active.includes(game.runway(s.dest, s.rwy)));
+        const clean = options.filter((s) => !this.crossesOtherFinal(game, s));
+        for (const s of clean.length ? clean : options) {
+          const rw = game.runway(s.dest, s.rwy);
+          const eta = Auto.eta(this.starDist(game, ac, s));
+          const lane = lanes[this.laneKey(game, rw)] || [];
+          const last = lane[lane.length - 1];
+          const land = last ? Math.max(eta, last.slot + this.separation(game, rw)) : eta;
+          const score = land - (s.weight || 1) * 30;   // 主な経路 (weight の大きいもの) を優先
+          if (!best || score < best.score) best = { s, score };
+        }
+        if (best && best.s.name !== ac.entry && !ac.approach && !ac.ils) {
+          this.cmd(game, ac, `STAR ${best.s.name}`);
+          w.rw = this.plannedRunway(game, ac);
+          w.d = this.distToGo(game, ac, w.rw);
+          w.eta = Auto.eta(w.d);
+        }
+        ac.autoStar = true;
+        ac.seqT = game.time + w.eta;
+        const lane = laneOf(w.rw);
+        lane.push(w);
+        schedule(lane);
+      }
+      return info;
+    }
+
+    // まだ進入許可のない機体の遅れを、減速と、STAR の途中の Fix での待機で吸収する
+    absorbDelay(game, w) {
+      const { ac, d, delay } = w;
+      const room = Auto.absorbable(d);
+      const fix = ac.hold ? ac.hold.fix : ac.directs[0];
+      const last = ac.plan[ac.plan.length - 1];
+      if (ac.hold) {
+        // STAR の途中で待機させた機体は、減速で間に合うところまで遅れが減ったら経路へ戻す
+        if (ac.autoHeld && delay <= room + 10) {
+          ac.autoHeld = false;
+          this.cmd(game, ac, fix.name);
+        }
+        return;
+      }
+      if (delay > room + HOLD_MARGIN && fix && fix !== last && game.fixes[fix.name] && G.dist(ac, fix) < 2.5 && d > 25) {
+        // 同じ Fix で待機中の機体と 1000ft 以上離れた高度で待機する (空いた高度がなければ待機せず減速だけ)
+        const taken = game.aircraft.filter((o) => o !== ac && o.hold && o.hold.fix === fix).map((o) => o.tAlt);
+        const base = Math.round(ac.tAlt / 1000) * 1000;
+        const alt = [0, 1000, -1000, 2000, -2000, 3000].map((k) => base + k)
+          .find((v) => v >= STACK_BASE && taken.every((o) => Math.abs(o - v) >= 1000) && this.safeAt(this.flying, ac, v));
+        if (alt != null) {
+          this.setAlt(game, ac, alt);
+          game.enterHold(ac, fix);
+          ac.autoHeld = true;
+          return;
+        }
+      }
+      if (d <= 20) return;
+      // 必要な分だけ遅くする: 1NM あたりに遅らせる時間を、最低速度で飛んだときの割合 f に合わせる
+      const vnom = Auto.nominalSpd(d);
+      const f = room > 0 ? Math.min(1, Math.max(0, delay / room)) : 0;
+      const v = Math.max(MIN_SPD, Math.min(CRUISE_SPD, Math.round(1 / (1 / vnom + f * (1 / MIN_SPD - 1 / vnom)) / 10) * 10));
+      const cap = ac.alt < K.LOW_ALT || ac.tAlt < K.LOW_ALT ? K.LOW_ALT_SPD : CRUISE_SPD;
+      const target = Math.min(cap, f < 0.03 ? CRUISE_SPD : v);
+      if (Math.abs(ac.tSpd - target) >= 10) this.cmd(game, ac, `S ${target}`);
     }
 
     plannedRunway(game, ac) {
@@ -147,18 +307,19 @@ window.ATC = window.ATC || {};
       }
       for (const lane of Object.values(lanes)) lane.sort((a, b) => a.d - b.d);
 
-      // まだ進入許可のない機体: 間隔が取れれば許可、取れなければ待機用の高度へ
-      const waiting = arr.filter((a) => !a.ils && !a.approach)
-        .map((ac) => { const rw = this.plannedRunway(game, ac); return { ac, rw, d: this.distToGo(game, ac, rw) }; })
+      const seq = this.sequence(game, arr);
+
+      // まだ進入許可のない機体: 順番が来て間隔が取れれば許可、取れなければ遅れを吸収、最後は待機用の高度へ
+      const waiting = arr.filter((a) => !a.ils && !a.approach && seq.has(a)).map((a) => seq.get(a))
         .sort((a, b) => a.d - b.d);
-      // 待機用の高度は滑走路ごとに 1 機 1 段。一度決めた段は、下の段が空いた時だけ 1 段ずつ下げる
+      // 待機用の高度は空港ごとに 1 機 1 段 (滑走路ごとだと、別の滑走路へ行く機体が同じ Fix で同じ高度になる)。一度決めた段は、下の段が空いた時だけ 1 段ずつ下げる
       // (順番を毎回並べ替えると、機体どうしが高度を入れ替えようとしてすれ違ってしまう)
       const used = {};
       for (const w of waiting) {
-        if (w.ac.autoStack) (used[w.rw.key] = used[w.rw.key] || new Set()).add(w.ac.autoStack);
+        if (w.ac.autoStack) (used[w.ac.dest] = used[w.ac.dest] || new Set()).add(w.ac.autoStack);
       }
       for (const w of waiting) {
-        const { ac, rw, d } = w;
+        const { ac, rw, d } = w;   // w.delay: 順番の枠までの遅れ(秒)、w.prev: 同じ列の 1 つ前
         // プレイヤーがレーダー誘導した機体は、まず経路の終点へ戻す
         if (!ac.directs.length && !ac.hold) {
           const last = ac.plan[ac.plan.length - 1];
@@ -172,10 +333,15 @@ window.ATC = window.ATC || {};
         const descentSafe = this.safeAt(this.flying, ac, game.approachTargetAlt(ac, rw));
         // 復行・進入中止の直後 (60秒) は許可を出し直さない
         const settled = ac.gaCooldown <= 0;
-        if (d < CLEAR_WITHIN && settled && !lowerFirst && descentSafe && lane.every((o) => Math.abs(o.d - d) >= ARR_SPACING)) {
+        // 順番が来ている (前の機体が進入許可済み) うえ、時間の間隔が取れている
+        const turn = ac.seqT != null && (!w.prev || w.prev.ac.approach || w.prev.ac.ils) && w.delay <= CLEAR_DELAY_OK;
+        // STAR の終点が遠い空港 (高松の POPAI など) もあるので、終点の近くや終点での待機中は距離によらず
+        const near = d < CLEAR_WITHIN || (ac.hold && !ac.autoHeld) || ac.directs.length <= 1;
+        if (near && settled && turn && !lowerFirst && descentSafe && lane.every((o) => Math.abs(o.d - d) >= MIN_SPACING)) {
+          if (ac.hold) ac.autoHeld = false;
           this.cmd(game, ac, `ILS ${rw.id}`);
           if (ac.approach) {
-            if (ac.autoStack) used[rw.key].delete(ac.autoStack);
+            if (ac.autoStack) used[ac.dest].delete(ac.autoStack);
             ac.autoStack = 0;
             lane.push({ ac, d });
             lane.sort((a, b) => a.d - b.d);
@@ -183,8 +349,9 @@ window.ATC = window.ATC || {};
           }
           continue;
         }
+        if (ac.seqT != null) this.absorbDelay(game, w);
         if (d > STACK_WITHIN || this.held(game, ac)) continue;
-        const set = used[rw.key] = used[rw.key] || new Set();
+        const set = used[ac.dest] = used[ac.dest] || new Set();
         if (!ac.autoStack) {
           let lv = STACK_BASE;
           while (set.has(lv)) lv += 1000;
