@@ -169,7 +169,7 @@ window.ATC = window.ATC || {};
         // 近くに自分より低い、まだ許可のない到着機がいれば先に行かせる (待機の積み重ねを下から降ろす)
         const lowerFirst = waiting.some((o) => o.ac !== ac && o.ac.alt < ac.alt - 300 && G.dist(o.ac, ac) < 8);
         // 進入許可を出すと FAF の高度まで降りるので、その降下が安全な時だけ
-        const descentSafe = this.safeAt(this.flying, ac, Math.min(ac.tAlt, game.clearedAltitude(ac, rw)));
+        const descentSafe = this.safeAt(this.flying, ac, game.approachTargetAlt(ac, rw));
         // 復行・進入中止の直後 (60秒) は許可を出し直さない
         const settled = ac.gaCooldown <= 0;
         if (d < CLEAR_WITHIN && settled && !lowerFirst && descentSafe && lane.every((o) => Math.abs(o.d - d) >= ARR_SPACING)) {

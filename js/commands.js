@@ -223,18 +223,28 @@ window.ATC = window.ATC || {};
           : active.find((r) => r.id === ac.plannedRwy) || active[0];
         if (!rw) return unable(`RWY ${act.rwy} NOT IN USE`);
         // 経路を飛んでいる・待機中なら経路の残りから最終進入へ。レーダー誘導中なら今の方位のまま会合する
-        const following = ac.directs.filter((f) => !/ (FAF|BASE)$/.test(f.name));
-        if (ac.hold || following.length) {
-          const from = following[following.length - 1] || ac.hold.fix;
+        let following = ac.directs.filter((f) => !/ (FAF|BASE)$/.test(f.name));
+        // ほかの滑走路の進入方式の経路 (23 の DELCA-DEANE-DAMBO など) に入っていれば、その手前で切る
+        const foreign = game.foreignTransitionFixes(rw);
+        const cut = following.findIndex((f) => foreign.has(f));
+        if (cut >= 0) {
+          following = following.slice(0, cut);
+          // その滑走路にも同じ IAF からの経路があれば (KAIHO など)、IAF から先はそちらを飛ぶ
+          const iaf = following.findLastIndex((f) => rw.transitions && rw.transitions[f.name]);
+          if (iaf >= 0) following = following.slice(0, iaf + 1);
+        }
+        if (ac.hold || following.length || cut >= 0) {
+          const from = following[following.length - 1] || (ac.hold && ac.hold.fix);
           ac.directs = [...following, ...game.approachTail(rw, from)];
           ac.autoFinal = !ac.directs.length;
           ac.finalPhase = null;
         }
-        const appAlt = game.clearedAltitude(ac, rw);
+        const appAlt = game.approachTargetAlt(ac, rw);
+        const published = game.publishedAltitude(ac, rw);
         ac.hold = null;
         ac.approach = rw;
-        ac.tAlt = Math.min(ac.tAlt, appAlt);
-        return `CLEARED ${rw.app.lda ? 'LDA' : 'ILS'} RWY ${rw.id} APPROACH`;
+        ac.tAlt = appAlt;
+        return `CLEARED ${rw.app.lda ? 'LDA' : 'ILS'} RWY ${rw.id} APPROACH${published ? `, MAINTAIN ${appAlt}` : ''}`;
       }
       case 'ga':
         if (!ac.ils && ac.approach) {

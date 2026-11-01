@@ -127,6 +127,7 @@ F5 で再読み込みしたりブラウザを閉じたりしても、次に開�
 
 - 南から: `ADDUM-BLITZ-BRASS-BACON-BIBLO-BEAST-BONDO` → 22 (LDA Z)。湾の上からは `…KAIHO-LD225-LD224-LD223-BALAN-TAYAS` → 22 (LDA Y)
 - 北から: `STONE-DREAD-DENNY-DATUM-DELCA-DEANE-DAMBO` → 23 (LDA Z)。湾の上からは `…LD224-DARKS-DOMEL` → 23 (LDA Y)
+- 南から 22 へ行く機体と北から 23 へ行く機体は、BIBLO / DELCA の近くで交差します。実際の進入方式どおり、22 側は 5000ft、23 側は 4000ft を保って高度で分けます (進入許可で `MAINTAIN 5000` のように指示され、低ければ上がります)
 - 2本の LDA コースは約 2NM 離れた平行なコースなので、22 と 23 は別々の列として同時に進入できます (実際も同時進入が認められています)
 - 地図では黄色の実線が LDA コース、MAPt から滑走路までの点線が目視で回り込む部分です。乗り方 (捕捉の条件・速度) は ILS と同じ
 

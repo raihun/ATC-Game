@@ -127,6 +127,11 @@ window.ATC = window.ATC || {};
         const rw = this.runway(s.dest, s.rwy);
         rw.transitions = rw.transitions || {};
         rw.transitions[s.route[s.route.length - 1]] = s.approach.map((n) => this.fix(n));
+        // 進入方式で高度が決まっている経路 (羽田 LDA Z: 22 側 5000ft・23 側 4000ft で、交差を高度で分ける)
+        if (s.approachAlt) {
+          rw.transitionAlt = rw.transitionAlt || {};
+          for (const n of [s.route[s.route.length - 1], ...s.approach]) rw.transitionAlt[n] = s.approachAlt;
+        }
       }
       this.arrStreams = this.config.arrivals.map((s) => {
         const rw = this.runway(s.dest, s.rwy);
@@ -220,6 +225,17 @@ window.ATC = window.ATC || {};
       if (Math.abs(xt) < 1 && along > 2 && along < rw.fafNm + 8) return [];
       if (along > rw.fafNm + 2 && Math.abs(xt) <= along - rw.fafNm) return [rw.faf];
       return [rw.bases[xt >= 0 ? 1 : -1], rw.faf];
+    }
+
+    // 同じ空港のほかの滑走路の進入方式の経路にしかない Fix (進入する滑走路を切り替えたとき、そこから先を捨てる)
+    foreignTransitionFixes(rw) {
+      const own = new Set(Object.values(rw.transitions || {}).flat());
+      const out = new Set();
+      for (const r of Object.values(this.runways)) {
+        if (r === rw || r.apt !== rw.apt) continue;
+        for (const f of Object.values(r.transitions || {}).flat()) if (!own.has(f)) out.add(f);
+      }
+      return out;
     }
 
     depRoute(s, rw) { return s.byRwy[rw.id] || s.byRwy.default || Object.values(s.byRwy)[0]; }
@@ -581,6 +597,18 @@ window.ATC = window.ATC || {};
         alt = Math.min(alt, Math.floor(this.pathAlt(rw, this.finalFrame(end, rw).togo) / 100) * 100);
       }
       return Math.max(2000, alt);
+    }
+
+    // 進入方式の経路に決まった高度があれば、その高度 (なければ null)
+    publishedAltitude(ac, rw) {
+      if (!rw.transitionAlt) return null;
+      const f = [ac.hold && ac.hold.fix, ...ac.directs].find((x) => x && rw.transitionAlt[x.name]);
+      return f ? rw.transitionAlt[f.name] : null;
+    }
+
+    // 進入許可で指示する高度。決まった高度がある経路はその高度を保つ (低ければ上げる)。ほかは今より下げるだけ
+    approachTargetAlt(ac, rw) {
+      return this.publishedAltitude(ac, rw) ?? Math.min(ac.tAlt, this.clearedAltitude(ac, rw));
     }
 
     // 進入許可があれば、角度や横ずれが多少大きくても自分で最終進入コースに乗る

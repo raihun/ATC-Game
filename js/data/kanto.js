@@ -293,9 +293,9 @@ ATC.maps.kanto = {
       },
       arrivals: [
         { dest: 'RJTT', rwy: '23', name: 'DATUM', from: [350, 20, 45], weight: 3,
-          route: ['STONE', 'DREAD', 'DENNY', 'DATUM'], approach: ['DELCA', 'DEANE', 'DAMBO'] },
+          route: ['STONE', 'DREAD', 'DENNY', 'DATUM'], approach: ['DELCA', 'DEANE', 'DAMBO'], approachAlt: 4000 },
         { dest: 'RJTT', rwy: '22', name: 'BACON', from: [250, 210, 170], weight: 3,
-          route: ['ADDUM', 'BLITZ', 'BRASS', 'BACON'], approach: ['BIBLO', 'BEAST', 'BONDO'] },
+          route: ['ADDUM', 'BLITZ', 'BRASS', 'BACON'], approach: ['BIBLO', 'BEAST', 'BONDO'], approachAlt: 5000 },
         { dest: 'RJTT', rwy: '22', name: 'BALAN', from: [250, 210, 170], weight: 1,
           route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO'], approach: ['LD225', 'LD224', 'LD223', 'BALAN', 'TAYAS'] },
         { dest: 'RJTT', rwy: '23', name: 'DARKS', from: [250, 210, 170], weight: 1,
