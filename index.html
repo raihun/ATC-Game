@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Japan Approach</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="radar"></canvas>
+
+<header id="topbar">
+  <button id="btn-menu" class="tb">MENU</button>
+  <div class="speed">
+    <button class="tb" data-speed="0" title="一時停止 (入力欄が空のときSpace)">❚❚</button>
+    <button class="tb" data-speed="1" title="等速">▶</button>
+    <button class="tb" data-speed="2" title="2倍速">▶▶</button>
+    <button class="tb" data-speed="4" title="4倍速">▶▶▶</button>
+    <button class="tb" data-speed="8" title="8倍速">×8</button>
+  </div>
+  <button id="btn-help" class="tb">コマンド</button>
+  <button id="btn-routes" class="tb">経路: 選択機</button>
+  <button id="btn-fit" class="tb" title="表示をリセット">全体表示</button>
+  <div id="clock">--:--:--</div>
+  <div id="score">SCORE 0</div>
+  <div id="counters">
+    <span title="ハンドオフした出発機">↗ <b id="c-dep">0</b></span>
+    <span title="着陸した到着機">↘ <b id="c-arr">0</b></span>
+    <span title="引き継いだ上空通過機">⇄ <b id="c-ovf">0</b></span>
+    <span title="間隔欠如" class="bad">⚠ <b id="c-viol">0</b></span>
+    <span title="空域逸脱" class="bad">✕ <b id="c-lost">0</b></span>
+  </div>
+  <button id="btn-auto" class="tb hidden" title="コンピュータ管制中 (クリックで設定)">AUTO 中</button>
+  <button id="btn-settings" class="tb" title="設定">⚙ 設定</button>
+</header>
+
+<section id="help" class="panel">
+  <h3>コマンド <small>Enterで送信 / 便名は選択中なら省略可</small></h3>
+  <table>
+    <tr><td>JAL123 L 30</td><td>左へ30°旋回 (R で右)</td></tr>
+    <tr><td>JAL123 H 270</td><td>方位270へ (LH / RH で旋回方向指定)</td></tr>
+    <tr><td>JAL123 D 40</td><td>4000ftへ降下 (C で上昇。40 = 4000ft)</td></tr>
+    <tr><td>JAL123 S 210</td><td>速度210kt</td></tr>
+    <tr><td>JAL123 CREAM</td><td>CREAMへ直行。経路上のFixなら、その先は経路どおり</td></tr>
+    <tr><td>JAL123 KZE-CREAM</td><td>経路の付け替え。元の経路に合流すれば、その先は元どおり</td></tr>
+    <tr><td>JAL123 VIA KZE CREAM</td><td>経路をまるごと置き換え (元の経路とは合流させない)</td></tr>
+    <tr><td>JAL123 ILS 34L</td><td>進入許可 (滑走路は省略可)。自分でILSに乗って着陸</td></tr>
+    <tr><td>JAL123 T</td><td>離陸許可</td></tr>
+    <tr><td>JAL123 GA</td><td>復行</td></tr>
+  </table>
+  <p>まとめて書けます: <code>JAL123 D40 S180 CREAM</code></p>
+  <h3>経路</h3>
+  <p>機体は飛行計画の経路 (STAR / SID) を自動で飛びます。方位を指示するとレーダー誘導になり、経路上のFixを指示すると経路に戻ります。到着機は進入許可がないまま経路の終点に着くと、そこでホールディングします。経路にないFixを指示すると経路の付け替えになり、その最後のFixが新しい終点になります。</p>
+  <h3>マウス</h3>
+  <p>機体クリックで選択すると操作リングが出ます。内側の輪で方位 (Shiftで遠回り)、右の弧で高度、左の弧で速度をクリック。押したままなぞって離した所でも決まります。<br>
+  選択中にFixクリックで直行<br>
+  経路を一から組み直す: パネルの「組み直す」(または Shift+Fixクリック) → Fixを順にクリック → Enterで確定 / BSで1つ戻す / Escでやめる<br>
+  右クリックでその方向へ旋回 / ドラッグで移動 / ホイールで拡大縮小</p>
+  <h3>着陸</h3>
+  <p>進入許可 (ILS) を出すと、経路の残りを飛んでから自分で最終進入コースに乗ります。レーダー誘導中なら今の方位のまま会合します。<br>
+  許可がなくても、黄色い扇形の中で最終進入コースから±60°以内を向き、黄色い目盛りの高度(百ft)以下にすると自動でILSを捕捉します。</p>
+  <h3>速度</h3>
+  <p>10000ft未満は250kt以下。STARの速度制限 (STONE 250kt など) と待機中 (230kt以下) も自動で守ります。ILSに乗れるのは210kt以下。ILS上では <code>S 160</code> などで5NMまでの速度を指示でき、その後は進入速度へ減速します (3NMで170ktを超えていると復行)。</p>
+  <h3>機体一覧の ! マーク</h3>
+  <p><b>!</b> = 着陸・ハンドオフまでの指示が足りない (進入許可なし、最終進入の近くで210ktより速い、出口への経路や高度が未指示)。<b>!!</b> = このままだと2分以内に空域外へ出る。</p>
+  <h3>上空通過機 (緑)</h3>
+  <p>空域を横切るだけの機体 (中部マップ)。データブロック右下の出口 Fix を、表示の高度の範囲 (例 HEIAN090-130 = 9000〜13000ft) で通過させると次の管制へ引き継ぎ。</p>
+  <h3>出発</h3>
+  <p>T で離陸させ、データブロック右下の出口Fixを表示の高度以上で通過させるとハンドオフ成功です。</p>
+  <h3>設定 (右上の ⚙)</h3>
+  <p>コンピュータ管制 (AUTO) の切り替えと、高度の見せ方 (影で立体表示 / 選択機との高度差) を選べます。AUTO 中は上部に「AUTO 中」が出ます (押すと設定が開きます)。AUTO を使ったゲームはハイスコア対象外です。</p>
+  <h3>得点</h3>
+  <p>着陸・ハンドオフ +100、点線の標準経路に近く飛ばせると最大 +50。間隔欠如(3NM・1000ft未満) -30、空域逸脱 -100、衝突で終了。</p>
+</section>
+
+<aside id="strips" class="panel"></aside>
+<section id="acpanel" class="panel hidden"></section>
+<div id="log"></div>
+<div id="cmdbar">
+  <input id="cmd" autocomplete="off" spellcheck="false" placeholder="コマンド入力  例: JAL123 D40 S210">
+</div>
+<div id="pause-banner" class="hidden">一時停止中 — 入力欄が空のとき Space で再開</div>
+
+<div id="start" class="modal">
+  <div class="dialog">
+    <h1>JAPAN APPROACH</h1>
+    <p class="lead">日本の空港の進入管制をするレーダーゲーム</p>
+    <h2>マップ</h2>
+    <div id="opt-map" class="choices"></div>
+    <h2>滑走路運用</h2>
+    <div id="opt-config" class="choices"></div>
+    <h2>難易度</h2>
+    <div id="opt-preset" class="choices"></div>
+    <div class="sliders">
+      <label>同時に飛ぶ最大機数 <b id="v-max"></b><input id="opt-max" type="range" min="2" max="20" step="1"></label>
+      <label>出現間隔の目安 <b id="v-interval"></b><input id="opt-interval" type="range" min="20" max="180" step="5"></label>
+    </div>
+    <p id="hiscore" class="hiscore"></p>
+    <button id="btn-start" class="primary">管制開始</button>
+  </div>
+</div>
+
+<div id="menu" class="modal hidden">
+  <div class="dialog small">
+    <h1>MENU</h1>
+    <button id="m-resume" class="primary">再開</button>
+    <button id="m-finish">ここで終了して結果を見る</button>
+    <button id="m-title">タイトルへ戻る</button>
+  </div>
+</div>
+
+<div id="settings" class="modal hidden">
+  <div class="dialog">
+    <h1>設定</h1>
+    <h2>コンピュータ管制</h2>
+    <div id="set-auto" class="choices">
+      <button data-auto="off">手動<small>自分で管制する</small></button>
+      <button data-auto="on">AUTO<small>コンピュータに任せる</small></button>
+    </div>
+    <p class="note">離陸・上昇・進入許可・待機・減速・接近回避を代わりに指示します。自分のコマンドも併用でき、いつでも手動に戻せます。一度でも使ったゲームはハイスコア対象外です。</p>
+    <h2>高度の見せ方</h2>
+    <div id="set-altview" class="choices">
+      <button data-altview="standard">標準<small>データブロックの数字だけ</small></button>
+      <button data-altview="shadow">立体 (影)<small>高いほど大きく、影が遠くぼやける</small></button>
+    </div>
+    <label class="check"><input type="checkbox" id="set-relalt"> 選択中の機体との高度差を表示する<small>他の機体の横に ±百ft を表示。1000ft 未満は赤、2000ft 未満は黄、3000ft 以上離れた機体は薄く</small></label>
+    <button id="set-close" class="primary">閉じる (Esc)</button>
+  </div>
+</div>
+
+<div id="result" class="modal hidden">
+  <div class="dialog small">
+    <h1 id="r-title"></h1>
+    <p id="r-body"></p>
+    <button id="r-retry" class="primary">同じ設定でもう一度</button>
+    <button id="r-title-btn">タイトルへ戻る</button>
+  </div>
+</div>
+
+<script src="js/geo.js"></script>
+<script src="js/data/kanto.js"></script>
+<script src="js/data/chubu.js"></script>
+<script src="js/data/okayama.js"></script>
+<script src="js/game.js"></script>
+<script src="js/commands.js"></script>
+<script src="js/render.js"></script>
+<script src="js/autopilot.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

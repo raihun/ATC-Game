@@ -1,0 +1,7 @@
+# Claude Code のローカル設定 (テスト用サーバーなど)
+.claude/
+
+# OS が作るファイル
+Thumbs.db
+desktop.ini
+.DS_Store
