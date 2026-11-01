@@ -7,6 +7,7 @@
 //   JAL123 T         離陸許可       JAL123 GA      復行
 //   JAL123 ILS 34L   進入許可 (滑走路を省くと予定の滑走路)。経路の残りを飛んでから自分でILSに乗る
 //   JAL123 VIA A B C 経路をまるごと A-B-C に置き換える (元の経路とは合流させない)
+//   JAL123 STAR BACON 同じ入口から入る別の標準到着経路 (STAR) に切り替える (滑走路もその経路のものに)
 // 便名は末尾の数字だけでも、選択中の機体なら省略しても可。"D40" のように詰めて書いてもよい。
 window.ATC = window.ATC || {};
 (function (ATC) {
@@ -15,7 +16,7 @@ window.ATC = window.ATC || {};
 
   const GLUED = /^(LH|RH|C|D|A|L|R|H|S|ILS)(\d+[LRC]?)$/;
   const RUNWAY = /^\d{2}[LRC]?$/;
-  const KEYWORDS = new Set(['C', 'D', 'A', 'L', 'R', 'LH', 'RH', 'H', 'S', 'T', 'TO', 'GA', 'ILS', 'VIA']);
+  const KEYWORDS = new Set(['C', 'D', 'A', 'L', 'R', 'LH', 'RH', 'H', 'S', 'T', 'TO', 'GA', 'ILS', 'VIA', 'STAR']);
 
   const fmtHdg = (h) => String(Math.round(G.norm360(h)) || 360).padStart(3, '0');
 
@@ -96,6 +97,10 @@ window.ATC = window.ATC || {};
           case 'VIA':
             via = true;
             break;
+          case 'STAR':
+            if (!toks[i]) throw new Error('STAR の後に経路の名前を書いてください');
+            actions.push({ type: 'star', name: toks[i++] });
+            break;
           default:
             throw new Error(`「${t}」は不明なコマンドかFix名です`);
         }
@@ -111,6 +116,7 @@ window.ATC = window.ATC || {};
   function leaveIls(ac) {
     if (!ac.ils) return;
     ac.ils = null;
+    ac.visual = false;
     ac.gaCooldown = 20;
   }
 
@@ -191,6 +197,15 @@ window.ATC = window.ATC || {};
         ac.turnDir = 0;
         return `CLEARED VIA ${ac.plan.map((f) => f.name).join('-')}`;
       }
+      case 'star': {
+        if (ac.kind !== 'arr') return unable('NOT AN ARRIVAL');
+        if (ac.ils) return unable('ESTABLISHED ON APPROACH');
+        const s = game.starOptions(ac).find((o) => o.name === act.name);
+        if (!s) return unable(`${act.name} ARRIVAL NOT AVAILABLE`);
+        leaveIls(ac);
+        game.assignStar(ac, s);
+        return `CLEARED ${s.name} ARRIVAL, RWY ${s.rwy}`;
+      }
       case 'takeoff':
         if (ac.state !== 'waiting') return unable('ALREADY ROLLING');
         if (game.runwayBusy(ac.rwy)) {
@@ -215,10 +230,11 @@ window.ATC = window.ATC || {};
           ac.autoFinal = !ac.directs.length;
           ac.finalPhase = null;
         }
+        const appAlt = game.clearedAltitude(ac, rw);
         ac.hold = null;
         ac.approach = rw;
-        ac.tAlt = Math.min(ac.tAlt, game.fafAltitude(rw));
-        return `CLEARED ILS RWY ${rw.id} APPROACH`;
+        ac.tAlt = Math.min(ac.tAlt, appAlt);
+        return `CLEARED ${rw.app.lda ? 'LDA' : 'ILS'} RWY ${rw.id} APPROACH`;
       }
       case 'ga':
         if (!ac.ils && ac.approach) {

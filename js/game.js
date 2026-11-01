@@ -58,6 +58,13 @@ window.ATC = window.ATC || {};
   const SAVE_REFS = ['rwy', 'ils', 'approach', 'exit'];
   const SAVE_LISTS = ['directs', 'plan', 'ref'];
 
+  const PARITY_TEXT = { odd: '奇数高度 (東行き)', even: '偶数高度 (西行き)' };
+  // 1000ft 単位の高度で、千の位が奇数か偶数か
+  function parityOk(alt, parity) {
+    const k = Math.round(alt / 1000);
+    return Math.abs(alt - k * 1000) <= 50 && (k % 2 === 1) === (parity === 'odd');
+  }
+
   function fmtAlt(v) { return v >= 14000 ? 'FL' + Math.round(v / 100) : String(Math.round(v / 100) * 100); }
 
   function makeAircraft(p) {
@@ -110,10 +117,14 @@ window.ATC = window.ATC || {};
       }
 
       this.config = map.configs[opts.configId];
+      for (const [code, cfg] of Object.entries(this.config.airports)) {
+        for (const id of cfg.lda || []) this.applyLda(code, id, map.airports[code].lda[id]);
+      }
       this.arrStreams = this.config.arrivals.map((s) => {
         const rw = this.runway(s.dest, s.rwy);
         const plan = s.route.map((n) => this.fix(n));
-        return { ...s, plan, ref: [...plan, ...this.approachTail(rw, plan[plan.length - 1]), rw] };
+        const app = rw.app.lda ? [rw.app] : [];
+        return { ...s, plan, ref: [...plan, ...this.approachTail(rw, plan[plan.length - 1]), ...app, rw] };
       });
       // SID は滑走路ごとに経路が違うことがある。route が配列なら全滑走路共通
       this.depStreams = map.departures
@@ -153,23 +164,52 @@ window.ATC = window.ATC || {};
 
     addRunwayEnd(code, apt, id, thr, far, course) {
       const end = { key: `${code} ${id}`, apt: code, id, x: thr.x, y: thr.y, far, course, elev: apt.elev };
-      end.faf = { name: `${id} FAF`, ...G.offset(end, course + 180, K.FAF_NM) };
-      // 横から来る機体用の基点 (FAF の 3NM 外側、最終進入コースから左右へ 4NM)。ここから浅い角度で FAF へ入る
-      const outer = G.offset(end, course + 180, K.FAF_NM + 3);
-      end.bases = {
-        1: { name: `${id} BASE`, side: 1, ...G.offset(outer, course + 90, 4) },
-        '-1': { name: `${id} BASE`, side: -1, ...G.offset(outer, course - 90, 4) },
-      };
+      this.setFinal(end, { x: thr.x, y: thr.y, course, extra: 0 }, K.FAF_NM);
       this.runways[end.key] = end;
     }
+
+    // 最終進入コース (app)。ふつうは滑走路の延長線そのもの。
+    // LDA (羽田 22/23 など) は滑走路と角度のずれたコースで MAPt まで来て、残り (extra NM) は目で見て滑走路へ回り込む
+    setFinal(end, app, fafNm) {
+      end.app = app;
+      end.fafNm = fafNm;
+      end.faf = { name: `${end.id} FAF`, ...G.offset(app, app.course + 180, fafNm) };
+      // 横から来る機体用の基点 (FAF の 3NM 外側、最終進入コースから左右へ 4NM)。ここから浅い角度で FAF へ入る
+      const outer = G.offset(app, app.course + 180, fafNm + 3);
+      end.bases = {
+        1: { name: `${end.id} BASE`, side: 1, ...G.offset(outer, app.course + 90, 4) },
+        '-1': { name: `${end.id} BASE`, side: -1, ...G.offset(outer, app.course - 90, 4) },
+      };
+    }
+
+    // 運用で LDA を使う滑走路は、MAPt (進入復行点) と FAF の Fix から最終進入コースを作り直す
+    applyLda(code, id, def) {
+      const end = this.runway(code, id);
+      const mapt = this.proj.toXY(def.mapt[0], def.mapt[1]);
+      const faf = this.fix(def.faf);
+      const app = { x: mapt.x, y: mapt.y, course: G.bearing(faf, mapt), extra: G.dist(mapt, end), lda: true };
+      this.setFinal(end, app, G.dist(faf, mapt));
+    }
+
+    // 最終進入コースに対する位置。along = MAPt (ILS は滑走路端) までの距離、togo = 滑走路端までの降下パス上の距離
+    finalFrame(p, rw) {
+      const f = G.runwayFrame(p, rw.app);
+      f.togo = f.along + rw.app.extra;
+      return f;
+    }
+
+    // 3° の降下パスでの高度
+    pathAlt(rw, togo) { return rw.elev + togo * K.GS_FT_PER_NM; }
 
     // 経路の最後の Fix から最終進入へつなぐ点。
     //   FAF の後ろ (進入方向から ±45° の範囲) にあれば FAF へまっすぐ。
     //   それ以外 (滑走路の横や手前で終わる経路) は、来た側の基点を経由して浅い角度で FAF へ (ダウンウインド → ベース → 最終進入)
+    //   最終進入コースの上 (FAF や LDA の IF など) で終わる経路は、そのまま最終進入へ
     approachTail(rw, last) {
       if (!last) return [];
-      const { along, xt } = G.runwayFrame(last, rw);
-      if (along > K.FAF_NM + 2 && Math.abs(xt) <= along - K.FAF_NM) return [rw.faf];
+      const { along, xt } = G.runwayFrame(last, rw.app);
+      if (Math.abs(xt) < 1 && along > 2 && along < rw.fafNm + 8) return [];
+      if (along > rw.fafNm + 2 && Math.abs(xt) <= along - rw.fafNm) return [rw.faf];
       return [rw.bases[xt >= 0 ? 1 : -1], rw.faf];
     }
 
@@ -243,7 +283,7 @@ window.ATC = window.ATC || {};
           if (blocked) continue;
           const { cs, type } = this.newCallsign();
           this.aircraft.push(makeAircraft({
-            cs, type, kind: 'arr', dest: s.dest, entry: s.name || s.plan[0].name, plannedRwy: s.rwy,
+            cs, type, kind: 'arr', dest: s.dest, entry: s.name || s.plan[0].name, entryFix: s.plan[0].name, plannedRwy: s.rwy,
             x: entry.x, y: entry.y, alt, tAlt: alt, spd: 280, tSpd: 280,
             hdg: G.bearing(entry, s.plan[0]), plan: s.plan, directs: s.plan.slice(), ref: [entry, ...s.ref],
           }));
@@ -263,11 +303,15 @@ window.ATC = window.ATC || {};
             a.state === 'air' && G.dist(a, entry) < 10 && Math.abs(a.alt - alt) < 1500);
           if (blocked) continue;
           const { cs, type } = this.newCallsign();
+          // 巡航のまま抜けていく機体 (出口の高度に上限がない) は、進む方向で奇数/偶数の高度が決まる
+          const parity = s.exitAltMax ? null : this.cruiseParity(entry, s.exitFix);
+          let exitAlt = s.exitAlt || 0;
+          while (parity && !parityOk(exitAlt, parity)) exitAlt += 1000;
           this.aircraft.push(makeAircraft({
             cs, type, kind: 'ovf', entry: s.name || s.plan[0].name,
             x: entry.x, y: entry.y, alt, tAlt: alt, spd: 300, tSpd: 300,
             hdg: G.bearing(entry, s.plan[0]), plan: s.plan, directs: s.plan.slice(), ref: [entry, ...s.plan],
-            exit: s.exitFix, exitAlt: s.exitAlt || 0, exitAltMax: s.exitAltMax || null,
+            exit: s.exitFix, exitAlt, exitAltMax: s.exitAltMax || null, parity,
           }));
           this.emit(`${cs} WITH YOU ${fmtAlt(alt)}, VIA ${s.plan.map((f) => f.name).join('-')}  [通過 ${this.exitRangeText(this.aircraft.at(-1))}]`, 'readback');
           return true;
@@ -278,13 +322,57 @@ window.ATC = window.ATC || {};
 
     // 出口 Fix での高度の条件 (出発機は下限だけ、上空通過機は上限があることも)
     exitAltOk(ac, alt) {
-      return alt >= ac.exitAlt - 50 && (ac.exitAltMax == null || alt <= ac.exitAltMax + 50);
+      return alt >= ac.exitAlt - 50 && (ac.exitAltMax == null || alt <= ac.exitAltMax + 50) &&
+        (!ac.parity || parityOk(alt, ac.parity));
     }
 
     exitRangeText(ac) {
       const f = (v) => fmtAlt(v);
       if (ac.exitAltMax != null) return `${ac.exit.name} を ${f(ac.exitAlt)}〜${f(ac.exitAltMax)}ft で`;
+      if (ac.parity) return `${ac.exit.name} を ${f(ac.exitAlt)} 以上の${PARITY_TEXT[ac.parity]}で`;
       return `${ac.exit.name} を ${f(ac.exitAlt)}ft 以上で`;
+    }
+
+    // 出口の条件に合う高度のうち、alt にいちばん近いもの (コンピュータ管制用)
+    nearestExitAlt(ac, alt) {
+      const hi = ac.exitAltMax ?? ac.exitAlt + 6000;
+      let best = null;
+      for (let v = ac.exitAlt; v <= hi; v += 1000) {
+        if (this.exitAltOk(ac, v) && (best == null || Math.abs(v - alt) < Math.abs(best - alt))) best = v;
+      }
+      return best ?? ac.exitAlt;
+    }
+
+    // 半円方式: 磁方位 0〜179° へ進む機体は奇数 (FL170, 190, 210…)、180〜359° は偶数 (FL180, 200…) の高度で巡航する。
+    // 地図は真方位なので、偏差 (関東・中部・岡山は約 7°W) を足して磁方位にする
+    cruiseParity(from, to) {
+      const mag = G.norm360(G.bearing(from, to) + (this.map.magVar ?? 7));
+      return mag < 180 ? 'odd' : 'even';
+    }
+
+    // 到着機が今の入口から選べる標準到着経路 (同じ空港・同じ入口の Fix から始まるもの)
+    starOptions(ac) {
+      if (ac.kind !== 'arr') return [];
+      const first = ac.entryFix || (this.arrStreams.find((s) => s.name === ac.entry) || {}).plan?.[0]?.name;
+      return this.arrStreams.filter((s) => s.name && s.dest === ac.dest && s.plan[0].name === first);
+    }
+
+    // 標準到着経路を切り替える。今いる場所に近い Fix から新しい経路に乗る
+    assignStar(ac, s) {
+      const plan = s.plan;
+      let i = 0;
+      for (let k = 1; k < plan.length; k++) if (G.dist(ac, plan[k]) < G.dist(ac, plan[i])) i = k;
+      if (i < plan.length - 1 && G.dist(ac, plan[i + 1]) < G.dist(plan[i], plan[i + 1])) i++;
+      const rw = this.runway(s.dest, s.rwy);
+      if (ac.approach && ac.approach !== rw) { ac.approach = null; ac.autoFinal = false; }
+      ac.plan = plan.slice();
+      ac.hold = null;
+      ac.autoFinal = false;
+      ac.turnDir = 0;
+      ac.directs = [...plan.slice(i), ...(ac.approach ? this.approachTail(rw, plan[plan.length - 1]) : [])];
+      ac.entry = s.name;
+      ac.plannedRwy = s.rwy;
+      ac.ref = [ac.ref[0], ...s.ref];
     }
 
     spawnDeparture() {
@@ -398,8 +486,8 @@ window.ATC = window.ATC || {};
     // 指示を出した直後に目標速度を計算し直す (一時停止中でも表示に反映されるように)
     refreshTargets(ac) {
       if (ac.ils) {
-        const { along } = G.runwayFrame(ac, ac.ils);
-        ac.ilsSpd = along > K.APP_SPD_UNTIL_NM ? Math.min(ac.tSpd, K.ILS_MAX_SPD) : K.VAPP;
+        const { togo } = this.finalFrame(ac, ac.ils);
+        ac.ilsSpd = togo > K.APP_SPD_UNTIL_NM && !ac.visual ? Math.min(ac.tSpd, K.ILS_MAX_SPD) : K.VAPP;
       }
       if (ac.state !== 'waiting') ac.spdTarget = this.speedTarget(ac);
     }
@@ -462,18 +550,30 @@ window.ATC = window.ATC || {};
 
     // ---- ILS ----------------------------------------------------------
 
-    fafAltitude(rw) { return Math.floor((rw.elev + K.FAF_NM * K.GS_FT_PER_NM) / 100) * 100; }
+    fafAltitude(rw) { return Math.floor(this.pathAlt(rw, rw.fafNm + rw.app.extra) / 100) * 100; }
+
+    // 進入許可を出したときに降りる高度。経路が最終進入コースの上 (LDA Y の TAYAS など FAF より内側) で終わるなら、
+    // その Fix での降下パスの高度まで
+    clearedAltitude(ac, rw) {
+      const route = ac.directs.filter((f) => !/ (FAF|BASE)$/.test(f.name));
+      const last = route[route.length - 1] || (ac.hold && ac.hold.fix);
+      let alt = this.fafAltitude(rw);
+      if (last && !this.approachTail(rw, last).length) {
+        alt = Math.min(alt, Math.floor(this.pathAlt(rw, this.finalFrame(last, rw).togo) / 100) * 100);
+      }
+      return Math.max(2000, alt);
+    }
 
     // 進入許可があれば、角度や横ずれが多少大きくても自分で最終進入コースに乗る
     tryCapture(ac) {
       const rws = ac.approach ? [ac.approach] : this.activeArrivalRunways(ac.dest);
       for (const rw of rws) {
         const cleared = ac.approach === rw;
-        const { along, xt } = G.runwayFrame(ac, rw);
+        const { along, xt, togo } = this.finalFrame(ac, rw);
         if (along < 2 || along > K.CAPTURE_MAX_NM) continue;
         if (Math.abs(xt) > 0.6 + along * 0.08 + (cleared ? 1.5 : 0)) continue;
-        if (Math.abs(G.angleDiff(ac.hdg, rw.course)) > (cleared ? 120 : K.CAPTURE_ANGLE)) continue;
-        if (ac.alt > rw.elev + along * K.GS_FT_PER_NM + K.CAPTURE_MARGIN_FT) continue;
+        if (Math.abs(G.angleDiff(ac.hdg, rw.app.course)) > (cleared ? 120 : K.CAPTURE_ANGLE)) continue;
+        if (ac.alt > this.pathAlt(rw, togo) + K.CAPTURE_MARGIN_FT) continue;
         if (ac.spd > K.ILS_MAX_SPD + 2) {
           if (!ac.warnedSpeed) {
             ac.warnedSpeed = true;
@@ -482,9 +582,10 @@ window.ATC = window.ATC || {};
           continue;
         }
         ac.ils = rw;
+        ac.visual = false;
         ac.tSpd = Math.min(ac.tSpd, Math.round(ac.spd));   // 乗った時の速度を維持して 5NM まで
         ac.directs = [];
-        this.emit(`${ac.cs} ESTABLISHED ILS RWY ${rw.id}`, 'readback');
+        this.emit(`${ac.cs} ESTABLISHED ${rw.app.lda ? 'LDA' : 'ILS'} RWY ${rw.id}`, 'readback');
         return;
       }
     }
@@ -497,26 +598,27 @@ window.ATC = window.ATC || {};
     // 向きを変えた後でも、近いのに高すぎると分かったらもう一度離れる (中止する前に)
     steerToFinal(ac) {
       const rw = ac.approach;
-      const { along, xt } = G.runwayFrame(ac, rw);
-      const tooHigh = ac.alt > rw.elev + along * K.GS_FT_PER_NM + K.CAPTURE_MARGIN_FT;
+      const { along, xt, togo } = this.finalFrame(ac, rw);
+      const tooHigh = ac.alt > this.pathAlt(rw, togo) + K.CAPTURE_MARGIN_FT;
+      // 向きを変える距離は滑走路端までの距離 (togo) で測る。LDA は MAPt から先の目視の分だけ短いコースでも乗れる
       const turnInAt = Math.max(8 + Math.abs(xt), (ac.alt - rw.elev) / K.GS_FT_PER_NM + 1);
-      if (ac.finalPhase !== 'in' && along >= turnInAt) ac.finalPhase = 'in';
-      else if (ac.finalPhase === 'in' && (along < 2 || (along < 8 && tooHigh))) ac.finalPhase = 'out';
+      if (ac.finalPhase !== 'in' && togo >= turnInAt && along >= 2) ac.finalPhase = 'in';
+      else if (ac.finalPhase === 'in' && (along < 2 || (togo < 8 && tooHigh))) ac.finalPhase = 'out';
       // 寄せる角度は横ずれに比例 (最大 45°)。延長線の遠くで横切っても行ったり来たりせず、線に乗って近づく
       ac.tHdg = ac.finalPhase === 'in'
-        ? G.norm360(rw.course - Math.max(-45, Math.min(45, xt * 15)))
-        : G.norm360(rw.course + 180);
+        ? G.norm360(rw.app.course - Math.max(-45, Math.min(45, xt * 15)))
+        : G.norm360(rw.app.course + 180);
       ac.turnDir = 0;
-      const below = rw.elev + Math.max(along, 10) * K.GS_FT_PER_NM - 300;
+      const below = this.pathAlt(rw, Math.max(along, 10) + rw.app.extra) - 300;
       ac.tAlt = Math.min(ac.tAlt, Math.max(2000, Math.floor(below / 100) * 100));
     }
 
     // 進入許可を出したのに高すぎる・ずれすぎで乗れないまま滑走路に近づいたら進入をやめる
     checkMissedApproach(ac) {
       if (ac.directs.length) return;   // まだ経路をたどって FAF へ向かっている途中
-      const { along, xt } = G.runwayFrame(ac, ac.approach);
+      const { along, xt } = this.finalFrame(ac, ac.approach);
       if (along > 2 || along < -1 || Math.abs(xt) > 4) return;
-      if (Math.abs(G.angleDiff(ac.hdg, ac.approach.course)) > 90) return;   // 空港の上を横切るだけなら対象外
+      if (Math.abs(G.angleDiff(ac.hdg, ac.approach.app.course)) > 90) return;   // 空港の上を横切るだけなら対象外
       ac.approach = null;
       ac.autoFinal = false;
       ac.warnedSpeed = false;
@@ -528,32 +630,52 @@ window.ATC = window.ATC || {};
 
     flyIls(ac) {
       const rw = ac.ils;
-      const { along, xt } = G.runwayFrame(ac, rw);
-      ac.tHdg = G.norm360(rw.course - clamp(xt * 35, -40, 40));
+      if (ac.visual) { this.flyVisual(ac); return; }
+      const { along, xt, togo } = this.finalFrame(ac, rw);
+      ac.tHdg = G.norm360(rw.app.course - clamp(xt * 35, -40, 40));
       ac.turnDir = 0;
-      const gs = rw.elev + Math.max(0, along) * K.GS_FT_PER_NM;
-      ac.tAlt = Math.min(ac.alt, gs);
+      ac.tAlt = Math.min(ac.alt, this.pathAlt(rw, Math.max(0, togo)));
       // 指示速度は 5NM まで。そこから進入速度へ減速し、3NM で落ち切っていなければ不安定進入
-      ac.ilsSpd = along > K.APP_SPD_UNTIL_NM ? Math.min(ac.tSpd, K.ILS_MAX_SPD) : K.VAPP;
-      if (along < K.STABLE_NM && ac.spd > K.STABLE_SPD) {
+      ac.ilsSpd = togo > K.APP_SPD_UNTIL_NM ? Math.min(ac.tSpd, K.ILS_MAX_SPD) : K.VAPP;
+      if (togo < K.STABLE_NM && ac.spd > K.STABLE_SPD) {
         this.goAround(ac);
         this.emit(`${ac.cs} 速度が速く不安定進入、復行`, 'warn');
         return;
       }
       if (along <= 0.15) {
-        if (Math.abs(xt) < 0.5) this.finish(ac, true);
-        else { this.goAround(ac); this.emit(`${ac.cs} 滑走路に正対できず復行`, 'warn'); }
+        if (Math.abs(xt) >= 0.5) { this.goAround(ac); this.emit(`${ac.cs} 滑走路に正対できず復行`, 'warn'); }
+        else if (rw.app.lda) ac.visual = true;   // MAPt から先は目で見て滑走路へ
+        else this.finish(ac, true);
+      }
+    }
+
+    // LDA の MAPt から先: 滑走路の手前 1.2NM の延長線上へ回り込み、そこから滑走路端へ
+    flyVisual(ac) {
+      const rw = ac.ils;
+      const join = G.offset(rw, rw.course + 180, 1.2);
+      const { along, xt } = G.runwayFrame(ac, rw);
+      const onFinal = along < 1.4 && Math.abs(xt) < 0.3;
+      ac.tHdg = onFinal ? G.norm360(rw.course - clamp(xt * 35, -40, 40)) : G.bearing(ac, join);
+      ac.turnDir = 0;
+      const togo = onFinal ? Math.max(0, along) : G.dist(ac, join) + 1.2;
+      ac.tAlt = Math.min(ac.alt, this.pathAlt(rw, togo));
+      ac.ilsSpd = K.VAPP;
+      if (along <= 0.15 && Math.abs(xt) < 0.5) this.finish(ac, true);
+      else if (along < -0.5 || G.dist(ac, rw) > rw.app.extra + 3) {
+        this.goAround(ac);
+        this.emit(`${ac.cs} 滑走路に正対できず復行`, 'warn');
       }
     }
 
     goAround(ac) {
       const rw = ac.ils;
+      ac.tHdg = ac.visual ? ac.hdg : rw.app.course;
       ac.ils = null;
+      ac.visual = false;
       ac.approach = null;
       ac.autoFinal = false;
       ac.warnedSpeed = false;   // やり直しの進入でも速度の警告を出す
       ac.tAlt = Math.max(3000, Math.round(ac.alt / 1000) * 1000);
-      ac.tHdg = rw.course;
       ac.turnDir = 0;
       ac.tSpd = 200;
       ac.gaCooldown = 60;
@@ -633,7 +755,7 @@ window.ATC = window.ATC || {};
           // 滑走路近くの低高度と、平行な別々の滑走路へ ILS 進入中の組は対象外
           // (羽田 22/23 のように進入コースが交わる組は対象)
           if (a.alt < 1200 || b.alt < 1200) continue;
-          if (a.ils && b.ils && a.ils !== b.ils && Math.abs(G.angleDiff(a.ils.course, b.ils.course)) < 3) continue;
+          if (a.ils && b.ils && a.ils !== b.ils && Math.abs(G.angleDiff(a.ils.app.course, b.ils.app.course)) < 3) continue;
           const v = Math.abs(a.alt - b.alt);
           if (v > K.SEP_FT - 50) continue;   // ほぼ1000ft差なら間隔は取れているとみなす
           const d = G.dist(a, b);
@@ -730,4 +852,5 @@ window.ATC = window.ATC || {};
 
   ATC.Game = Game;
   ATC.fmtAlt = fmtAlt;
+  ATC.parityOk = parityOk;
 })(window.ATC);

@@ -11,7 +11,10 @@
 //   land / water : [経度, 緯度] の多角形
 //   fixes        : { 名前: { lat, lon, type: 'vor' | 'fix' } }
 //   runways      : ids[0] 側の滑走路末端(thr)・真方位(hdg)・長さ(m)。反対側は自動計算
+//   lda          : 滑走路とずれたコースで進入する LDA の定義 (faf: FAF の Fix, mapt: 進入復行点)。MAPt から先は目視で滑走路へ
 //   configs      : 運用ごとの使用滑走路と到着経路 (STAR)。最終進入 (FAF→滑走路) は自動で付け足す
+//     name / when / note : 開始画面に出す運用の名前・時間帯や条件・説明
+//     airports.*.lda     : この運用で LDA 進入にする滑走路
 //     arrivals.from : 到着機が空域に入ってくる方角 (経路の最初の Fix から見た方位)。地図の端に出現する
 //   departures   : 出発経路 (SID)。route は滑走路ごとに書ける ({ default: [...], '16R': [...] })
 //     exit / exitAlt : 最後の Fix をこの高度以上で通過させるとハンドオフ成功
@@ -25,6 +28,7 @@ ATC.maps.kanto = {
   name: '関東',
   subtitle: '羽田・成田',
   bounds: { west: 138.00, east: 141.95, south: 34.40, north: 36.55 },
+  magVar: 7,   // 磁気偏差 (西偏 7°)。高度の半円方式で使う
 
   land: [
     // 本州 (遠州灘 → 駿河湾 → 伊豆 → 相模湾 → 三浦 → 東京湾 → 房総 → 鹿島灘)
@@ -177,6 +181,19 @@ ATC.maps.kanto = {
     VIXEN: { lat: 35.54008, lon: 140.73072 },
     WELDA: { lat: 35.49483, lon: 139.99908 },
     YANAG: { lat: 35.48458, lon: 139.50139 },
+    // 計器進入 (IAP) の Fix。羽田 22/23 の LDA Z / LDA Y・ILS、成田 34L・16R の FAF
+    BIBLO: { lat: 35.58578, lon: 140.18558 },
+    BEAST: { lat: 35.60564, lon: 140.14292 },   // LDA Z RWY22 の IF
+    BONDO: { lat: 35.60536, lon: 140.07847 },   // LDA Z RWY22 の FAF
+    DELCA: { lat: 35.58525, lon: 140.19469 },
+    DEANE: { lat: 35.57147, lon: 140.13208 },   // LDA Z RWY23 の IF
+    DAMBO: { lat: 35.57125, lon: 140.07871 },   // LDA Z RWY23 の FAF
+    TAYAS: { lat: 35.60467, lon: 139.95017 },   // LDA Y RWY22 の FAF
+    DOMEL: { lat: 35.57056, lon: 139.94309 },   // LDA Y RWY23 の FAF
+    NITRO: { lat: 35.76964, lon: 139.95124 },   // ILS RWY22 の FAF
+    SALVO: { lat: 35.68145, lon: 139.99170 },   // ILS Z RWY23 の FAF
+    COSMO: { lat: 35.58282, lon: 140.50639 },   // 成田 34L の FAF
+    GREBE: { lat: 35.94116, lon: 140.24743 },   // 成田 16R の FAF
   },
 
   airports: {
@@ -188,6 +205,11 @@ ATC.maps.kanto = {
         { ids: ['04', '22'], thr: [35.5360, 139.7560], hdg: 35, len: 2500 },
         { ids: ['05', '23'], thr: [35.5245, 139.8110], hdg: 42, len: 2500 },
       ],
+      // 千葉の海岸沿いを西 (磁方位 277°) へ進み、MAPt から目視で左へ回り込んで着陸
+      lda: {
+        '22': { faf: 'BONDO', mapt: [35.60408, 139.84068] },   // MAPt = IKL DME 1.1
+        '23': { faf: 'DAMBO', mapt: [35.57025, 139.88201] },   // MAPt = ITL DME 4.9
+      },
     },
     RJAA: {
       name: '成田', short: 'NRT', elev: 140,
@@ -207,22 +229,23 @@ ATC.maps.kanto = {
   departures: [
     // 羽田
     { apt: 'RJTT', name: 'PLUTO', exit: 'SYE', exitAlt: 12000, weight: 2,
-      turn: { '34R': 'R', '05': 'R', '16L': 'L', '16R': 'L' },
+      turn: { '34R': 'R', '05': 'R', '16L': 'L', '16R': 'L', '22': 'L' },
       route: { default: ['TORAM', 'PLUTO', 'KAIJI', 'SYE'], '16L': ['WELDA', 'PLUTO', 'KAIJI', 'SYE'],
-        '16R': ['WELDA', 'PLUTO', 'KAIJI', 'SYE'], '05': ['PLUTO', 'KAIJI', 'SYE'] } },
+        '16R': ['WELDA', 'PLUTO', 'KAIJI', 'SYE'], '22': ['WELDA', 'PLUTO', 'KAIJI', 'SYE'], '05': ['PLUTO', 'KAIJI', 'SYE'] } },
     { apt: 'RJTT', name: 'SEKID', exit: 'SEKID', exitAlt: 13000, weight: 2, turn: { '34R': 'R', '05': 'R' },
-      route: { default: ['TORAM', 'PLUTO', 'KAIJI', 'HILLS', 'SEKID'], '16R': ['HATBA', 'KAMAT', 'SEKID'],
+      route: { default: ['TORAM', 'PLUTO', 'KAIJI', 'HILLS', 'SEKID'], '16R': ['HATBA', 'KAMAT', 'SEKID'], '22': ['HATBA', 'KAMAT', 'SEKID'],
         '16L': ['WELDA', 'PLUTO', 'KAIJI', 'HILLS', 'SEKID'], '05': ['LOCUP', 'KAMAT', 'SEKID'] } },
     { apt: 'RJTT', name: 'YANAG', exit: 'YANAG', exitAlt: 11000, weight: 2, turn: { '34R': 'R', '05': 'R' },
-      route: { default: ['LOCUP', 'BAYGE', 'YANAG'], '16R': ['BAYGE', 'YANAG'], '16L': ['BAYGE', 'YANAG'] } },
+      route: { default: ['LOCUP', 'BAYGE', 'YANAG'], '16R': ['BAYGE', 'YANAG'], '16L': ['BAYGE', 'YANAG'], '22': ['BAYGE', 'YANAG'] } },
     { apt: 'RJTT', name: 'JYOGA', exit: 'JYOGA', exitAlt: 13000, weight: 3, turn: { '34R': 'R', '05': 'R' },
-      route: { default: ['LOCUP', 'TAURA', 'JYOGA'], '16R': ['TAURA', 'JYOGA'], '16L': ['TAURA', 'JYOGA'] } },
+      route: { default: ['LOCUP', 'TAURA', 'JYOGA'], '16R': ['TAURA', 'JYOGA'], '16L': ['TAURA', 'JYOGA'], '22': ['TAURA', 'JYOGA'] } },
     { apt: 'RJTT', name: 'MIURA', exit: 'MIURA', exitAlt: 9000, weight: 2, turn: { '34R': 'R', '05': 'R' },
-      route: { default: ['LOCUP', 'URAGA', 'MIURA'], '16R': ['URAGA', 'MIURA'], '16L': ['URAGA', 'MIURA'] } },
+      route: { default: ['LOCUP', 'URAGA', 'MIURA'], '16R': ['URAGA', 'MIURA'], '16L': ['URAGA', 'MIURA'], '22': ['URAGA', 'MIURA'] } },
     { apt: 'RJTT', name: 'KANEK', exit: 'KANEK', exitAlt: 15000, weight: 1, turn: { '34R': 'R' },
       route: { default: ['TORAM', 'PLUTO', 'KAIJI', 'HILLS', 'LUPUS', 'KANEK'],
         '16L': ['WELDA', 'PLUTO', 'KAIJI', 'HILLS', 'LUPUS', 'KANEK'],
         '16R': ['WELDA', 'PLUTO', 'KAIJI', 'HILLS', 'LUPUS', 'KANEK'],
+        '22': ['HATBA', 'KAMAT', 'SEKID', 'LUPUS', 'KANEK'],
         '05': ['PLUTO', 'KAIJI', 'HILLS', 'LUPUS', 'KANEK'] } },
     // 成田
     { apt: 'RJAA', name: 'TETRA', exit: 'TETRA', exitAlt: 6000, weight: 2, route: ['TETRA'] },
@@ -237,7 +260,8 @@ ATC.maps.kanto = {
 
   configs: {
     north: {
-      name: '北風運用',
+      name: '北風運用', when: '年の約6割',
+      note: '羽田は 34L/34R に着陸、05/34R から離陸。成田は 34L に着陸、34R から離陸。北風の日は終日この形です。',
       airports: {
         RJTT: { arr: ['34L', '34R'], dep: ['05', '34R'] },
         RJAA: { arr: ['34L'], dep: ['34R'] },
@@ -250,34 +274,71 @@ ATC.maps.kanto = {
         { dest: 'RJTT', rwy: '34L', name: 'ARLON', from: [250, 210, 170], weight: 3,
           route: ['ADDUM', 'AWARD', 'ARLON'] },
         { dest: 'RJAA', rwy: '34L', name: 'DAISY', from: [60, 30, 90], weight: 2,
-          route: ['MELON', 'PLOKY', 'VIXEN', 'DREAM', 'BEACH', 'DAISY'] },
+          route: ['MELON', 'PLOKY', 'VIXEN', 'DREAM', 'BEACH', 'DAISY', 'COSMO'] },
         { dest: 'RJAA', rwy: '34L', name: 'CORGI', from: [200, 240, 150], weight: 2,
-          route: ['VENUS', 'CORGI'] },
+          route: ['VENUS', 'CORGI', 'COSMO'] },
       ],
     },
     south: {
-      name: '南風運用',
+      name: '南風・好天 (LDA)', when: '南風のふだん',
+      note: '羽田は千葉の海岸沿いを西へ進み、最後に目で見て 22/23 へ回り込む LDA 進入 (南からは BACON→22、北からは DATUM→23)。'
+        + '離陸は 16L/16R。南風の日の 15〜19 時以外はおもにこの形で、FlightRadar24 でよく見る航跡です。',
+      airports: {
+        RJTT: { arr: ['22', '23'], dep: ['16L', '16R'], lda: ['22', '23'] },
+        RJAA: { arr: ['16R'], dep: ['16L'] },
+      },
+      arrivals: [
+        { dest: 'RJTT', rwy: '23', name: 'DATUM', from: [350, 20, 45], weight: 3,
+          route: ['STONE', 'DREAD', 'DENNY', 'DATUM', 'DELCA', 'DEANE', 'DAMBO'] },
+        { dest: 'RJTT', rwy: '22', name: 'BACON', from: [250, 210, 170], weight: 3,
+          route: ['ADDUM', 'BLITZ', 'BRASS', 'BACON', 'BIBLO', 'BEAST', 'BONDO'] },
+        { dest: 'RJTT', rwy: '22', name: 'BALAN', from: [250, 210, 170], weight: 1,
+          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'LD223', 'BALAN', 'TAYAS'] },
+        { dest: 'RJTT', rwy: '23', name: 'DARKS', from: [250, 210, 170], weight: 1,
+          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'DARKS', 'DOMEL'] },
+        { dest: 'RJAA', rwy: '16R', name: 'PIXUS', from: [60, 30, 90], weight: 2,
+          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS', 'GREBE'] },
+        { dest: 'RJAA', rwy: '16R', name: 'MARCH', from: [200, 240, 150], weight: 2,
+          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH', 'GREBE'] },
+      ],
+    },
+    southIls: {
+      name: '南風・悪天 (ILS)', when: '雲が低い日',
+      note: '雲が低く LDA が使えない日は、22/23 に ILS でまっすぐ進入します (北からは STEAM→22、南からは NYLON→23)。'
+        + '2本の進入コースが交わるので、22 と 23 の到着機は1列に並べる必要があります。',
       airports: {
         RJTT: { arr: ['22', '23'], dep: ['16L', '16R'] },
         RJAA: { arr: ['16R'], dep: ['16L'] },
       },
       arrivals: [
-        { dest: 'RJTT', rwy: '22', name: 'DATUM', from: [350, 20, 45], weight: 2,
-          route: ['STONE', 'DREAD', 'DENNY', 'DATUM'] },
-        { dest: 'RJTT', rwy: '22', name: 'STEAM', from: [350, 20, 45], weight: 1,
-          route: ['STONE', 'SQUAD', 'SCREW', 'STEAM'] },
-        { dest: 'RJTT', rwy: '23', name: 'BACON', from: [250, 210, 170], weight: 2,
-          route: ['ADDUM', 'BLITZ', 'BRASS', 'BACON'] },
-        { dest: 'RJTT', rwy: '22', name: 'NYLON', from: [250, 210, 170], weight: 1,
-          route: ['ADDUM', 'BLITZ', 'BRASS', 'NYLON'] },
-        { dest: 'RJTT', rwy: '22', name: 'DARKS', from: [250, 210, 170], weight: 1,
-          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'DARKS'] },
-        { dest: 'RJTT', rwy: '23', name: 'BALAN', from: [250, 210, 170], weight: 1,
-          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'LD223', 'BALAN'] },
+        { dest: 'RJTT', rwy: '22', name: 'STEAM', from: [350, 20, 45], weight: 3,
+          route: ['STONE', 'SQUAD', 'SCREW', 'STEAM', 'NITRO'] },
+        { dest: 'RJTT', rwy: '23', name: 'NYLON', from: [250, 210, 170], weight: 2,
+          route: ['ADDUM', 'BLITZ', 'BRASS', 'NYLON', 'SALVO'] },
+        { dest: 'RJTT', rwy: '23', name: 'DAIYA', from: [250, 210, 170], weight: 1,
+          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'LD223', 'DAIYA'] },
         { dest: 'RJAA', rwy: '16R', name: 'PIXUS', from: [60, 30, 90], weight: 2,
-          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS'] },
+          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS', 'GREBE'] },
         { dest: 'RJAA', rwy: '16R', name: 'MARCH', from: [200, 240, 150], weight: 2,
-          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH'] },
+          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH', 'GREBE'] },
+      ],
+    },
+    southNew: {
+      name: '南風・新経路', when: '15〜19時',
+      note: '15〜19時のうち3時間ほどの運用。埼玉から都心の上空を通って 16L/16R に着陸し、22 (川崎方面) と 05 から離陸します。'
+        + '新経路の Fix の座標は手元の資料にないため、到着経路の後半 (FAF への回り込み) はゲームの推定です。',
+      airports: {
+        RJTT: { arr: ['16L', '16R'], dep: ['22', '05'] },
+        RJAA: { arr: ['16R'], dep: ['16L'] },
+      },
+      arrivals: [
+        { dest: 'RJTT', rwy: '16L', from: [350, 20, 45], weight: 2, route: ['STONE', 'SQUAD', 'SCREW'] },
+        { dest: 'RJTT', rwy: '16R', from: [350, 20, 45], weight: 1, route: ['STONE', 'DREAD'] },
+        { dest: 'RJTT', rwy: '16L', from: [250, 210, 170], weight: 2, route: ['ADDUM', 'BLITZ', 'BRASS', 'COUPE', 'DATUM'] },
+        { dest: 'RJAA', rwy: '16R', name: 'PIXUS', from: [60, 30, 90], weight: 2,
+          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS', 'GREBE'] },
+        { dest: 'RJAA', rwy: '16R', name: 'MARCH', from: [200, 240, 150], weight: 2,
+          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH', 'GREBE'] },
       ],
     },
   },

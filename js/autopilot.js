@@ -77,6 +77,9 @@ window.ATC = window.ATC || {};
         if (ac.tAlt < ac.exitAlt) this.setAltIfSafe(game, ac, ac.exitAlt);
         else if (ac.exitAltMax != null && ac.tAlt > ac.exitAltMax && G.dist(ac, ac.exit) < 60) {
           this.setAltIfSafe(game, ac, ac.exitAltMax);
+        } else if (ac.parity && !game.exitAltOk(ac, ac.tAlt)) {
+          // 間隔を取るために方向と合わない高度にしていたら、合う高度へ戻す
+          this.setAltIfSafe(game, ac, game.nearestExitAlt(ac, ac.tAlt));
         }
       }
     }
@@ -90,25 +93,26 @@ window.ATC = window.ATC || {};
 
     // 滑走路までの残り距離 (経路をたどった長さ)
     distToGo(game, ac, rw) {
-      if (ac.ils) return Math.max(0, G.runwayFrame(ac, ac.ils).along);
+      if (ac.ils) return ac.visual ? G.dist(ac, ac.ils) : Math.max(0, game.finalFrame(ac, ac.ils).togo);
       if (ac.autoFinal && ac.approach === rw) {
         // 自動で最終進入へ回り込み中: 一度離れる分と 45° で寄せる分を足す
-        const { along, xt } = G.runwayFrame(ac, rw);
-        const turnInAt = Math.max(8 + Math.abs(xt), (ac.alt - rw.elev) / K.GS_FT_PER_NM + 1);
+        const { along, xt } = game.finalFrame(ac, rw);
+        const turnInAt = Math.max(8 + Math.abs(xt), (ac.alt - rw.elev) / K.GS_FT_PER_NM + 1) - rw.app.extra;
         const out = ac.finalPhase === 'in' ? 0 : Math.max(0, turnInAt - along);
-        return out * 2 + Math.abs(xt) * Math.SQRT2 + Math.max(along, turnInAt) - Math.abs(xt);
+        return out * 2 + Math.abs(xt) * Math.SQRT2 + Math.max(along, turnInAt) - Math.abs(xt) + rw.app.extra;
       }
       let d = 0, p = ac;
       const tailPts = [rw.faf, rw.bases[1], rw.bases[-1]];
       const pts = ac.hold ? [ac.hold.fix] : ac.directs.filter((f) => !tailPts.includes(f));
       for (const f of pts) { d += G.dist(p, f); p = f; }
       for (const f of game.approachTail(rw, p === ac ? ac : p)) { d += G.dist(p, f); p = f; }
-      return d + G.dist(p, rw);
+      return d + G.dist(p, rw.app) + rw.app.extra;
     }
 
-    // 到着の順番を管理する単位。平行な滑走路は別々、進入コースが交わる滑走路 (羽田 22/23) はまとめて 1 列
+    // 到着の順番を管理する単位。平行な滑走路は別々、進入コースが交わる滑走路 (羽田 22/23 の ILS) はまとめて 1 列
+    // (22/23 の LDA は平行な 2 本のコースなので別々)
     laneKey(game, rw) {
-      const parallel = game.activeArrivalRunways(rw.apt).every((r) => Math.abs(G.angleDiff(r.course, rw.course)) < 3);
+      const parallel = game.activeArrivalRunways(rw.apt).every((r) => Math.abs(G.angleDiff(r.app.course, rw.app.course)) < 3);
       return parallel ? rw.key : rw.apt;
     }
 
@@ -152,7 +156,7 @@ window.ATC = window.ATC || {};
         // 近くに自分より低い、まだ許可のない到着機がいれば先に行かせる (待機の積み重ねを下から降ろす)
         const lowerFirst = waiting.some((o) => o.ac !== ac && o.ac.alt < ac.alt - 300 && G.dist(o.ac, ac) < 8);
         // 進入許可を出すと FAF の高度まで降りるので、その降下が安全な時だけ
-        const descentSafe = this.safeAt(this.flying, ac, Math.min(ac.tAlt, game.fafAltitude(rw)));
+        const descentSafe = this.safeAt(this.flying, ac, Math.min(ac.tAlt, game.clearedAltitude(ac, rw)));
         // 復行・進入中止の直後 (60秒) は許可を出し直さない
         const settled = ac.gaCooldown <= 0;
         if (d < CLEAR_WITHIN && settled && !lowerFirst && descentSafe && lane.every((o) => Math.abs(o.d - d) >= ARR_SPACING)) {

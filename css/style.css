@@ -84,6 +84,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #acpanel .row label { width: 36px; color: var(--muted); }
 #acpanel .row button { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--panel-line); border-radius: 3px; padding: 3px 6px; font-family: var(--mono); font-size: 12px; }
 #acpanel .row button:hover { border-color: var(--accent); }
+#acpanel .row button small { color: var(--muted); font-size: 10px; }
 #acpanel .row button.rebuild { border-color: var(--draft); color: var(--draft); }
 #acpanel .row button:disabled { opacity: 0.4; cursor: default; }
 #acpanel .draft { margin: 6px 0; padding: 6px 8px; border: 1px dashed var(--draft); border-radius: 4px; }

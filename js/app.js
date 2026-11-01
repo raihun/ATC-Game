@@ -86,10 +86,13 @@ window.ATC = window.ATC || {};
         }).join('');
         // 滑走路運用の選択肢はマップごとに違う (関東は北風/南風、岡山は東風/西風)
         const map = ATC.maps[s.map];
-        const configs = [...Object.entries(map.configs).map(([id, c]) => ({ id, label: c.name })), { id: 'random', label: 'ランダム' }];
+        const configs = [...Object.entries(map.configs).map(([id, c]) => ({ id, label: c.name, sub: c.when, note: c.note })),
+          { id: 'random', label: 'ランダム', sub: '毎回どれか', note: '上のどれかを毎回ランダムに選びます。' }];
         if (!configs.some((c) => c.id === s.config)) s.config = configs[0].id;
         $('#opt-config').innerHTML = configs.map((c) =>
-          `<button data-config="${c.id}" class="${s.config === c.id ? 'on' : ''}">${esc(c.label)}</button>`).join('');
+          `<button data-config="${c.id}" class="${s.config === c.id ? 'on' : ''}">${esc(c.label)}${c.sub ? `<small>${esc(c.sub)}</small>` : ''}</button>`).join('');
+        const cur = configs.find((c) => c.id === s.config);
+        $('#config-note').textContent = (cur && cur.note) || '';
         $('#opt-preset').innerHTML = Object.entries(PRESETS).map(([id, p]) =>
           `<button data-preset="${id}" class="${s.preset === id ? 'on' : ''}">${p.label}<small>最大${p.max}機 / ${p.interval}秒</small></button>`
         ).join('') + `<button data-preset="custom" class="${s.preset === 'custom' ? 'on' : ''}">カスタム<small>下で調整</small></button>`;
@@ -535,7 +538,7 @@ window.ATC = window.ATC || {};
       if (ac.state === 'waiting') return `離陸待ち RWY${ac.rwy.id}  ${clock(ac.waitTime).slice(3)}`;
       if (ac.state === 'takeoff') return `離陸滑走中 RWY${ac.rwy.id}`;
       const alt = `${Math.round(ac.alt / 100) * 100}ft ${Math.round(ac.spd)}kt`;
-      if (ac.ils) return `ILS ${ac.ils.id} 進入中  ${alt}`;
+      if (ac.ils) return `${ac.ils.app.lda ? 'LDA' : 'ILS'} ${ac.ils.id} 進入中  ${alt}`;
       if (ac.hold) return `${ac.hold.fix.name} で待機中  ${alt}`;
       if (ac.approach) return `進入許可 ${ac.approach.id}  ${alt}`;
       if (ac.exit) return `${alt}  出口まで ${ATC.geo.dist(ac, ac.exit).toFixed(0)}NM`;
@@ -576,7 +579,7 @@ window.ATC = window.ATC || {};
       let nav = ac.hold ? `${ac.hold.fix.name} でホールディング中`
         : ac.directs.length ? `経路 ${ac.directs.map((f) => f.name).join('→')}`
         : `方位 ${fmtH(ac.hdg)} → ${fmtH(ac.tHdg)} (レーダー誘導)`;
-      if (ac.approach && !ac.ils) nav += `\n進入許可 ILS ${ac.approach.id}`;
+      if (ac.approach && !ac.ils) nav += `\n進入許可 ${ac.approach.app.lda ? 'LDA' : 'ILS'} ${ac.approach.id}`;
       // 指示中の高度・速度のボタンに青い枠
       for (const b of el.querySelectorAll('button[data-cmd]')) {
         const m = b.dataset.cmd.match(/^([AS]) (\d+)$/);
@@ -615,8 +618,12 @@ window.ATC = window.ATC || {};
         html += `<div class="hint">ILSで最終進入中。速度の指示は5NMまで有効で、その後は進入速度へ減速します (3NMで170ktを超えていると復行)。方位や直行を指示するとILSから外れます。</div>`;
         return html;
       }
+      // 巡航で抜けていく上空通過機は、進む方向に合った高度 (奇数/偶数) を並べる
+      const alts = ac.parity
+        ? Array.from({ length: 5 }, (_, k) => g.nearestExitAlt(ac, ac.exitAlt) + k * 2000)
+        : [2000, 3000, 4000, 6000, 9000, 11000, 13000];
       html += `<div class="row"><label>高度</label>${btns([['-1000', 'alt:-1000'], ['+1000', 'alt:1000'],
-        ...[2000, 3000, 4000, 6000, 9000, 11000, 13000].map((v) => [String(v / 1000) + 'k', `A ${v}`])])}</div>`;
+        ...alts.map((v) => [ac.parity ? ATC.fmtAlt(v) : String(v / 1000) + 'k', `A ${v}`])])}</div>`;
       html += `<div class="row"><label>速度</label>${btns([160, 180, 210, 250, 280].map((v) => [String(v), `S ${v}`]))}</div>`;
       html += `<div class="row"><label>旋回</label>${btns([['L30', 'L 30'], ['L10', 'L 10'], ['R10', 'R 10'], ['R30', 'R 30']])}</div>`;
       // 飛行計画の経路。押すとその Fix へ直行し、先は計画どおり
@@ -638,8 +645,16 @@ window.ATC = window.ATC || {};
         }).join('')}<button data-act="draft" class="rebuild">組み直す</button></div>`;
       }
       if (ac.kind === 'arr') {
-        html += `<div class="row"><label>進入</label>${g.activeArrivalRunways(ac.dest).map((rw) =>
-          `<button data-cmd="ILS ${rw.id}" class="${ac.approach === rw ? 'cur' : ''}">ILS ${rw.id}</button>`).join('')}</div>`;
+        // 同じ入口から選べる標準到着経路 (STAR)。押すとその経路と滑走路に切り替える
+        const stars = g.starOptions(ac);
+        if (stars.length > 1) {
+          html += `<div class="row"><label>標準経路</label>${stars.map((s) =>
+            `<button data-cmd="STAR ${s.name}" class="${ac.entry === s.name ? 'cur' : ''}" title="${esc(s.route.join('-'))}">${s.name}<small> ${s.rwy}</small></button>`).join('')}</div>`;
+        }
+        html += `<div class="row"><label>進入</label>${g.activeArrivalRunways(ac.dest).map((rw) => {
+          const kind = rw.app.lda ? 'LDA' : 'ILS';
+          return `<button data-cmd="ILS ${rw.id}" class="${ac.approach === rw ? 'cur' : ''}">${kind} ${rw.id}</button>`;
+        }).join('')}</div>`;
         html += `<div class="hint">黄色の扇形内で、進入コースに±60°以内の角度・目盛りの高度以下・210kt以下にすると自動でILS捕捉。<br>リング: 内側=方位 / 右=高度 / 左=速度　経路のFix: そこへ直行して先は経路どおり</div>`;
       } else {
         html += `<div class="hint">${esc(g.exitRangeText(ac))}通過させると次の管制へ引き継ぎ。<br>リング: 内側=方位 / 右=高度 / 左=速度　経路のFix: そこへ直行して先は経路どおり</div>`;

@@ -338,13 +338,16 @@ window.ATC = window.ATC || {};
       for (const code of Object.keys(g.config.airports)) {
         const labeled = new Set();   // 平行滑走路は高度の数字を片方だけに出す
         for (const rw of g.activeArrivalRunways(code)) {
-          const showAlt = !labeled.has(rw.course);
-          labeled.add(rw.course);
-          const back = rw.course + 180, side = rw.course + 90;
+          // 最終進入コース (LDA は滑走路と角度がずれていて、MAPt から先は目視で回り込む)
+          const app = rw.app;
+          const labelKey = `${app.course}/${app.extra}`;
+          const showAlt = !labeled.has(labelKey);
+          labeled.add(labelKey);
+          const back = app.course + 180, side = app.course + 90;
           // ILS を自動捕捉できる範囲
           const near = [], far = [];
           for (const d of [2, K.CAPTURE_MAX_NM]) {
-            const c = G.offset(rw, back, d), w = 0.6 + d * 0.08;
+            const c = G.offset(app, back, d), w = 0.6 + d * 0.08;
             near.push(G.offset(c, side, w));
             far.push(G.offset(c, side, -w));
           }
@@ -354,19 +357,25 @@ window.ATC = window.ATC || {};
 
           ctx.strokeStyle = COL.approach;
           ctx.lineWidth = 1.5;
-          this.path([rw, G.offset(rw, back, 16)]);
+          this.path([app, G.offset(app, back, 16)]);
           ctx.stroke();
           ctx.lineWidth = 1;
+          if (app.lda) {
+            ctx.setLineDash([3, 4]);
+            this.path([app, G.offset(rw, rw.course + 180, 1.2), rw]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
 
           // 降下パス上の高度 (百ft単位)
           ctx.fillStyle = COL.approach;
           for (const d of [4, 8, 12, 16]) {
-            const p = this.toScreen(G.offset(rw, back, d));
-            const t1 = this.toScreen(G.offset(G.offset(rw, back, d), side, 0.4));
-            const t2 = this.toScreen(G.offset(G.offset(rw, back, d), side, -0.4));
+            const p = this.toScreen(G.offset(app, back, d));
+            const t1 = this.toScreen(G.offset(G.offset(app, back, d), side, 0.4));
+            const t2 = this.toScreen(G.offset(G.offset(app, back, d), side, -0.4));
             ctx.strokeStyle = COL.approach;
             ctx.beginPath(); ctx.moveTo(t1.x, t1.y); ctx.lineTo(t2.x, t2.y); ctx.stroke();
-            if (showAlt && this.view.scale > 5) ctx.fillText(pad3((rw.elev + d * K.GS_FT_PER_NM) / 100), p.x + 6, p.y + 3);
+            if (showAlt && this.view.scale > 5) ctx.fillText(pad3(g.pathAlt(rw, d + app.extra) / 100), p.x + 6, p.y + 3);
           }
         }
       }
@@ -577,7 +586,7 @@ window.ATC = window.ATC || {};
       const altLine = altPart + spdPart;
       let nav;
       if (ac.state === 'takeoff') nav = `RWY${ac.rwy.id} ROLL`;
-      else if (ac.ils) nav = `ILS ${ac.ils.id}`;
+      else if (ac.ils) nav = `${ac.ils.app.lda ? 'LDA' : 'ILS'} ${ac.ils.id}`;
       else if (ac.hold) nav = `HOLD ${ac.hold.fix.name}`;
       else if (ac.approach && (!ac.directs.length || / (FAF|BASE)$/.test(ac.directs[0].name))) nav = `APP ${ac.approach.id}`;
       else if (ac.directs.length) nav = `>${ac.directs[0].name}`;
