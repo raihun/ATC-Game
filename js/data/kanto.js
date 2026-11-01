@@ -15,6 +15,7 @@
 //   configs      : 運用ごとの使用滑走路と到着経路 (STAR)。最終進入 (FAF→滑走路) は自動で付け足す
 //     name / when / note : 開始画面に出す運用の名前・時間帯や条件・説明
 //     airports.*.lda     : この運用で LDA 進入にする滑走路
+//     arrivals.approach  : STAR の終点 (IAF) から最終進入までの進入方式の Fix。進入許可を受けてから飛ぶ
 //     arrivals.from : 到着機が空域に入ってくる方角 (経路の最初の Fix から見た方位)。地図の端に出現する
 //   departures   : 出発経路 (SID)。route は滑走路ごとに書ける ({ default: [...], '16R': [...] })
 //     exit / exitAlt : 最後の Fix をこの高度以上で通過させるとハンドオフ成功
@@ -29,6 +30,9 @@ ATC.maps.kanto = {
   subtitle: '羽田・成田',
   bounds: { west: 138.00, east: 141.95, south: 34.40, north: 36.55 },
   magVar: 7,   // 磁気偏差 (西偏 7°)。高度の半円方式で使う
+  // 実際の混み具合に近い同時機数と出現間隔 (開始画面の「実際のピーク」)。
+  // 羽田・成田あわせて1時間に約160回の離着陸。到着は空域に約20分、出発は約10分いるので、同時に約40機
+  peak: { max: 40, interval: 22 },
 
   land: [
     // 本州 (遠州灘 → 駿河湾 → 伊豆 → 相模湾 → 三浦 → 東京湾 → 房総 → 鹿島灘)
@@ -274,9 +278,9 @@ ATC.maps.kanto = {
         { dest: 'RJTT', rwy: '34L', name: 'ARLON', from: [250, 210, 170], weight: 3,
           route: ['ADDUM', 'AWARD', 'ARLON'] },
         { dest: 'RJAA', rwy: '34L', name: 'DAISY', from: [60, 30, 90], weight: 2,
-          route: ['MELON', 'PLOKY', 'VIXEN', 'DREAM', 'BEACH', 'DAISY', 'COSMO'] },
+          route: ['MELON', 'PLOKY', 'VIXEN', 'DREAM', 'BEACH', 'DAISY'], approach: ['COSMO'] },
         { dest: 'RJAA', rwy: '34L', name: 'CORGI', from: [200, 240, 150], weight: 2,
-          route: ['VENUS', 'CORGI', 'COSMO'] },
+          route: ['VENUS', 'CORGI'], approach: ['COSMO'] },
       ],
     },
     south: {
@@ -289,17 +293,17 @@ ATC.maps.kanto = {
       },
       arrivals: [
         { dest: 'RJTT', rwy: '23', name: 'DATUM', from: [350, 20, 45], weight: 3,
-          route: ['STONE', 'DREAD', 'DENNY', 'DATUM', 'DELCA', 'DEANE', 'DAMBO'] },
+          route: ['STONE', 'DREAD', 'DENNY', 'DATUM'], approach: ['DELCA', 'DEANE', 'DAMBO'] },
         { dest: 'RJTT', rwy: '22', name: 'BACON', from: [250, 210, 170], weight: 3,
-          route: ['ADDUM', 'BLITZ', 'BRASS', 'BACON', 'BIBLO', 'BEAST', 'BONDO'] },
+          route: ['ADDUM', 'BLITZ', 'BRASS', 'BACON'], approach: ['BIBLO', 'BEAST', 'BONDO'] },
         { dest: 'RJTT', rwy: '22', name: 'BALAN', from: [250, 210, 170], weight: 1,
-          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'LD223', 'BALAN', 'TAYAS'] },
+          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO'], approach: ['LD225', 'LD224', 'LD223', 'BALAN', 'TAYAS'] },
         { dest: 'RJTT', rwy: '23', name: 'DARKS', from: [250, 210, 170], weight: 1,
-          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'DARKS', 'DOMEL'] },
+          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO'], approach: ['LD225', 'LD224', 'DARKS', 'DOMEL'] },
         { dest: 'RJAA', rwy: '16R', name: 'PIXUS', from: [60, 30, 90], weight: 2,
-          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS', 'GREBE'] },
+          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS'], approach: ['GREBE'] },
         { dest: 'RJAA', rwy: '16R', name: 'MARCH', from: [200, 240, 150], weight: 2,
-          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH', 'GREBE'] },
+          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH'], approach: ['GREBE'] },
       ],
     },
     southIls: {
@@ -312,15 +316,15 @@ ATC.maps.kanto = {
       },
       arrivals: [
         { dest: 'RJTT', rwy: '22', name: 'STEAM', from: [350, 20, 45], weight: 3,
-          route: ['STONE', 'SQUAD', 'SCREW', 'STEAM', 'NITRO'] },
+          route: ['STONE', 'SQUAD', 'SCREW', 'STEAM'], approach: ['NITRO'] },
         { dest: 'RJTT', rwy: '23', name: 'NYLON', from: [250, 210, 170], weight: 2,
-          route: ['ADDUM', 'BLITZ', 'BRASS', 'NYLON', 'SALVO'] },
+          route: ['ADDUM', 'BLITZ', 'BRASS', 'NYLON'], approach: ['SALVO'] },
         { dest: 'RJTT', rwy: '23', name: 'DAIYA', from: [250, 210, 170], weight: 1,
-          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO', 'LD225', 'LD224', 'LD223', 'DAIYA'] },
+          route: ['ADDUM', 'AWARD', 'NANSO', 'UMUKI', 'KAIHO'], approach: ['LD225', 'LD224', 'LD223', 'DAIYA'] },
         { dest: 'RJAA', rwy: '16R', name: 'PIXUS', from: [60, 30, 90], weight: 2,
-          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS', 'GREBE'] },
+          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS'], approach: ['GREBE'] },
         { dest: 'RJAA', rwy: '16R', name: 'MARCH', from: [200, 240, 150], weight: 2,
-          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH', 'GREBE'] },
+          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH'], approach: ['GREBE'] },
       ],
     },
     southNew: {
@@ -336,9 +340,9 @@ ATC.maps.kanto = {
         { dest: 'RJTT', rwy: '16R', from: [350, 20, 45], weight: 1, route: ['STONE', 'DREAD'] },
         { dest: 'RJTT', rwy: '16L', from: [250, 210, 170], weight: 2, route: ['ADDUM', 'BLITZ', 'BRASS', 'COUPE', 'DATUM'] },
         { dest: 'RJAA', rwy: '16R', name: 'PIXUS', from: [60, 30, 90], weight: 2,
-          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS', 'GREBE'] },
+          route: ['MELON', 'CLUST', 'NORMA', 'ACELA', 'PIXUS'], approach: ['GREBE'] },
         { dest: 'RJAA', rwy: '16R', name: 'MARCH', from: [200, 240, 150], weight: 2,
-          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH', 'GREBE'] },
+          route: ['VENUS', 'BETEL', 'CVC', 'TWINS', 'GEMIN', 'MARCH'], approach: ['GREBE'] },
       ],
     },
   },

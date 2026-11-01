@@ -16,6 +16,8 @@ window.ATC = window.ATC || {};
   const TRAIL_SLOW = 7;       // 同じ滑走路で前との差がこれより詰まったら減速(NM)
   const TOO_CLOSE = 3;        // これより詰まったら後ろの機体を復行させる(NM)
   const DEP_INTERVAL = 90;    // 同じ滑走路から続けて離陸させる間隔(秒)
+  const SAME_SID_INTERVAL = 120;   // 同じ出口へ向かう機体を続けて離陸させる間隔 (別の滑走路からでも)(秒)
+  const SAME_APT_INTERVAL = 45;    // 同じ空港の別の滑走路から続けて離陸させる間隔 (平行滑走路で横並びにならないように)(秒)
   const STACK_BASE = 6000;    // 待機の一番下の高度
   const PREDICT = [0, 15, 30, 45, 60, 90];   // 接近を調べる先読み時間(秒)
   const CONFLICT_NM = 4.5;
@@ -27,6 +29,7 @@ window.ATC = window.ATC || {};
     constructor() {
       this.timer = 0;
       this.lastTakeoff = {};
+      this.lastByExit = {};
     }
 
     update(game, dt) {
@@ -64,9 +67,19 @@ window.ATC = window.ATC || {};
         if (done.has(rw.key)) continue;
         done.add(rw.key);
         if (game.time - (this.lastTakeoff[rw.key] ?? -1e9) < DEP_INTERVAL) continue;
+        const exitKey = `${ac.origin} ${ac.exit.name}`;
+        if (game.time - (this.lastTakeoff[ac.origin] ?? -1e9) < SAME_APT_INTERVAL) continue;
+        if (game.time - (this.lastByExit[exitKey] ?? -1e9) < SAME_SID_INTERVAL) {
+          done.delete(rw.key);   // この滑走路の次の機体 (別の出口) は出してよい
+          continue;
+        }
         if (game.runwayBusy(rw) || this.arrivalClose(game, air, rw)) continue;
         this.cmd(game, ac, `T C ${ac.exitAlt}`);
-        if (ac.state === 'takeoff') this.lastTakeoff[rw.key] = game.time;
+        if (ac.state === 'takeoff') {
+          this.lastTakeoff[rw.key] = game.time;
+          this.lastTakeoff[ac.origin] = game.time;
+          this.lastByExit[exitKey] = game.time;
+        }
       }
       // 出発機と上空通過機: 出口 Fix へ向かわせ、出口の高度の条件に合わせる
       // (上限のある通過機は、出口の 60NM 手前から降ろす)

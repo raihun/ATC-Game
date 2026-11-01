@@ -12,6 +12,12 @@ window.ATC = window.ATC || {};
     hard: { label: 'むずかしい', max: 10, interval: 55 },
     expert: { label: '上級', max: 14, interval: 40 },
   };
+  // マップに実際の混み具合 (peak) があれば「実際のピーク」も選べる。最大機数のスライダーもそこまで広げる
+  const SLIDER_MAX = 30;
+  function presetsFor(map) {
+    if (!map || !map.peak) return PRESETS;
+    return { ...PRESETS, peak: { label: '実際のピーク', max: map.peak.max, interval: map.peak.interval } };
+  }
   // 地域ごとのマップ。データ (js/data/*.js) がないものは「準備中」
   const MAPS = [
     { id: 'kanto', label: '関東' },
@@ -93,7 +99,12 @@ window.ATC = window.ATC || {};
           `<button data-config="${c.id}" class="${s.config === c.id ? 'on' : ''}">${esc(c.label)}${c.sub ? `<small>${esc(c.sub)}</small>` : ''}</button>`).join('');
         const cur = configs.find((c) => c.id === s.config);
         $('#config-note').textContent = (cur && cur.note) || '';
-        $('#opt-preset').innerHTML = Object.entries(PRESETS).map(([id, p]) =>
+        const presets = presetsFor(map);
+        if (!presets[s.preset] && s.preset !== 'custom') s.preset = 'normal';
+        const maxLimit = Math.max(SLIDER_MAX, map.peak ? map.peak.max : 0);
+        $('#opt-max').max = maxLimit;
+        s.max = Math.min(s.max, maxLimit);
+        $('#opt-preset').innerHTML = Object.entries(presets).map(([id, p]) =>
           `<button data-preset="${id}" class="${s.preset === id ? 'on' : ''}">${p.label}<small>最大${p.max}機 / ${p.interval}秒</small></button>`
         ).join('') + `<button data-preset="custom" class="${s.preset === 'custom' ? 'on' : ''}">カスタム<small>下で調整</small></button>`;
         $('#opt-max').value = s.max;
@@ -112,14 +123,15 @@ window.ATC = window.ATC || {};
         if (b.dataset.config) s.config = b.dataset.config;
         if (b.dataset.preset) {
           s.preset = b.dataset.preset;
-          if (PRESETS[s.preset]) Object.assign(s, { max: PRESETS[s.preset].max, interval: PRESETS[s.preset].interval });
+          const p = presetsFor(ATC.maps[s.map])[s.preset];
+          if (p) Object.assign(s, { max: p.max, interval: p.interval });
         }
         render();
       });
       const onSlider = () => {
         s.max = Number($('#opt-max').value);
         s.interval = Number($('#opt-interval').value);
-        const match = Object.entries(PRESETS).find(([, p]) => p.max === s.max && p.interval === s.interval);
+        const match = Object.entries(presetsFor(ATC.maps[s.map])).find(([, p]) => p.max === s.max && p.interval === s.interval);
         s.preset = match ? match[0] : 'custom';
         render();
       };

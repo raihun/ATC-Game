@@ -22,6 +22,7 @@ window.ATC = window.ATC || {};
     VAPP: 145,           // 最終進入速度
     STABLE_NM: 3,        // ここで STABLE_SPD を超えていたら不安定進入として復行
     STABLE_SPD: 170,
+    FLOW_HOLD_PER_RWY: 2,  // 滑走路1本あたり、これだけ待機していたら新しい到着機を止める (流量制御)
   };
 
   const AIRLINES = [
@@ -120,6 +121,13 @@ window.ATC = window.ATC || {};
       for (const [code, cfg] of Object.entries(this.config.airports)) {
         for (const id of cfg.lda || []) this.applyLda(code, id, map.airports[code].lda[id]);
       }
+      // STAR の終点 (IAF) から最終進入までの進入方式の経路。進入許可を受けてから飛ぶ (許可がなければ STAR の終点で待機)
+      for (const s of this.config.arrivals) {
+        if (!s.approach) continue;
+        const rw = this.runway(s.dest, s.rwy);
+        rw.transitions = rw.transitions || {};
+        rw.transitions[s.route[s.route.length - 1]] = s.approach.map((n) => this.fix(n));
+      }
       this.arrStreams = this.config.arrivals.map((s) => {
         const rw = this.runway(s.dest, s.rwy);
         const plan = s.route.map((n) => this.fix(n));
@@ -207,6 +215,7 @@ window.ATC = window.ATC || {};
     //   最終進入コースの上 (FAF や LDA の IF など) で終わる経路は、そのまま最終進入へ
     approachTail(rw, last) {
       if (!last) return [];
+      if (rw.transitions && rw.transitions[last.name]) return rw.transitions[last.name];
       const { along, xt } = G.runwayFrame(last, rw.app);
       if (Math.abs(xt) < 1 && along > 2 && along < rw.fafNm + 8) return [];
       if (along > rw.fafNm + 2 && Math.abs(xt) <= along - rw.fafNm) return [rw.faf];
@@ -274,8 +283,16 @@ window.ATC = window.ATC || {};
       return { cs: 'JAL' + Math.floor(Math.random() * 9000 + 1000), type: 'B738' };
     }
 
+    // 流量制御: 待機中の到着機が多い空港へは新しい到着機を出さない
+    // (実際も航空交通管理センターが出発空港で待たせ、空中で待つ機体が増えすぎないようにしている)
+    flowControlled(dest) {
+      const holding = this.aircraft.filter((a) => a.kind === 'arr' && a.dest === dest && a.hold).length;
+      return holding >= K.FLOW_HOLD_PER_RWY * Math.max(1, this.activeArrivalRunways(dest).length);
+    }
+
     spawnArrival() {
       for (const s of weightedOrder(this.arrStreams)) {
+        if (this.flowControlled(s.dest)) continue;
         const entry = this.entryPoint(s.plan[0], pick(s.from || [0]));
         for (const alt of shuffle(this.map.arrivalAlts || [11000, 12000, 13000])) {
           const blocked = this.aircraft.some((a) =>
@@ -555,11 +572,13 @@ window.ATC = window.ATC || {};
     // 進入許可を出したときに降りる高度。経路が最終進入コースの上 (LDA Y の TAYAS など FAF より内側) で終わるなら、
     // その Fix での降下パスの高度まで
     clearedAltitude(ac, rw) {
-      const route = ac.directs.filter((f) => !/ (FAF|BASE)$/.test(f.name));
+      const real = (f) => f && !/ (FAF|BASE)$/.test(f.name);
+      const route = ac.directs.filter(real);
       const last = route[route.length - 1] || (ac.hold && ac.hold.fix);
+      const end = last && [last, ...this.approachTail(rw, last)].filter(real).pop();
       let alt = this.fafAltitude(rw);
-      if (last && !this.approachTail(rw, last).length) {
-        alt = Math.min(alt, Math.floor(this.pathAlt(rw, this.finalFrame(last, rw).togo) / 100) * 100);
+      if (end && !this.approachTail(rw, end).length) {
+        alt = Math.min(alt, Math.floor(this.pathAlt(rw, this.finalFrame(end, rw).togo) / 100) * 100);
       }
       return Math.max(2000, alt);
     }
