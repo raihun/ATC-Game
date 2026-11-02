@@ -22,6 +22,10 @@ window.ATC = window.ATC || {};
   const MIN_SPD = 220;        // 遅れを吸収するときの最低速度(kt)。ILS に乗れる 210kt より速く (許可前に勝手に乗らないように)
   const CRUISE_SPD = 280;
   const CLEAR_DELAY_OK = 20;  // 残りの遅れがこれ以下なら進入許可を出してよい(秒)
+  const IN_TRAIL_NM = 10;     // 同じ経路の前の機体がこれより近ければ、その速度に合わせる(NM)
+  const IN_TRAIL_CLOSE = 6;   // これより近ければ、前の機体より 20kt 遅くして間を広げる(NM)
+  const SPEEDS = [280, 250, 230, 220];   // 遅れを吸収するときに指示する速度 (実際の管制のように区切りのよい値で)
+  const SPEED_EVERY = 60;     // 速度の指示を出し直す最短の間隔 (追いつきそうな時の減速は除く)(秒)
   const HOLD_MARGIN = 40;     // 減速で吸収できる量をこれ以上超える遅れがあれば、レーダー誘導か途中の Fix で待機(秒)
   const VECTOR_MAX = 480;     // レーダー誘導で吸収する遅れの上限。これより大きければ待機(秒)
   const VECTOR_ANGLE = 50;    // 次の Fix への方位から外す角度(°)
@@ -103,7 +107,11 @@ window.ATC = window.ATC || {};
       for (const ac of air) {
         if (!ac.exit || ac.state !== 'air') continue;
         if (this.held(game, ac)) continue;   // 接近回避の旋回・高度を保っている間はそのまま
-        if (!ac.directs.includes(ac.exit)) this.cmd(game, ac, ac.exit.name);
+        if (!ac.directs.includes(ac.exit) && !ac.hold) {
+          // 出口の高度に届かないまま出口 Fix に着いたら、高度が合うまでそこで待機 (直行の指示を出し続けない)
+          if (G.dist(ac, ac.exit) < 3) game.enterHold(ac, ac.exit);
+          else this.cmd(game, ac, ac.exit.name);
+        }
         if (ac.tAlt < ac.exitAlt) this.setAltIfSafe(game, ac, ac.exitAlt);
         else if (ac.exitAltMax != null && ac.tAlt > ac.exitAltMax && G.dist(ac, ac.exit) < 60) {
           this.setAltIfSafe(game, ac, ac.exitAltMax);
@@ -354,8 +362,36 @@ window.ATC = window.ATC || {};
       const f = room > 0 ? Math.min(1, Math.max(0, delay / room)) : 0;
       const v = Math.max(MIN_SPD, Math.min(CRUISE_SPD, Math.round(1 / (1 / vnom + f * (1 / MIN_SPD - 1 / vnom)) / 10) * 10));
       const cap = ac.alt < K.LOW_ALT || ac.tAlt < K.LOW_ALT ? K.LOW_ALT_SPD : CRUISE_SPD;
-      const target = Math.min(cap, f < 0.03 ? CRUISE_SPD : v);
-      if (Math.abs(ac.tSpd - target) >= 10) this.cmd(game, ac, `S ${target}`);
+      let target = f < 0.03 ? CRUISE_SPD : v;
+      // 同じ経路で前を飛ぶ機体に追いつきそうなら、その速度に合わせる (近すぎれば 20kt 遅く)
+      const lead = this.inTrailLeader(game, ac);
+      const close = lead && G.dist(ac, lead) < IN_TRAIL_CLOSE;
+      if (lead) target = Math.min(target, Math.max(MIN_SPD, (close ? lead.tSpd - 20 : lead.tSpd)));
+      // 区切りのよい速度に切り下げ、10000ft 未満は 250kt まで
+      target = Math.min(cap, SPEEDS.find((s) => s <= target) ?? MIN_SPD);
+      const diff = target - ac.tSpd;
+      if (Math.abs(diff) < 20 && !(close && diff < 0)) return;
+      if (game.time < (ac.autoSpdT || 0) && !(close && diff < 0)) return;
+      // 速度を戻す (上げる) のは、前の指示から 2 倍の時間がたってから (上げ下げを繰り返さないように)
+      if (diff > 0 && game.time < (ac.autoSpdT || 0) + SPEED_EVERY) return;
+      ac.autoSpdT = game.time + SPEED_EVERY;
+      this.cmd(game, ac, `S ${target}`);
+    }
+
+    // 同じ経路の前を飛んでいる到着機 (同じ Fix へ向かっていて Fix に近い方か、自分の経路の先の Fix へ向かっている機体) のうち、
+    // 10NM 以内でいちばん近いもの。待機中・ILS 上の機体は除く
+    inTrailLeader(game, ac) {
+      const next = ac.directs[0];
+      if (!next) return null;
+      let best = null;
+      for (const o of game.aircraft) {
+        if (o === ac || o.kind !== 'arr' || o.state !== 'air' || o.ils || o.hold || !o.directs.length) continue;
+        const k = ac.directs.indexOf(o.directs[0]);
+        if (k < 0 || (k === 0 && G.dist(o, next) >= G.dist(ac, next))) continue;
+        const gap = G.dist(ac, o);
+        if (gap < IN_TRAIL_NM && (!best || gap < best.gap)) best = { o, gap };
+      }
+      return best && best.o;
     }
 
     plannedRunway(game, ac) {
@@ -471,9 +507,15 @@ window.ATC = window.ATC || {};
             i--;
             continue;
           }
-          const slow = ac.ils ? 150 : 160;
-          if (tight && ac.tSpd > slow) this.cmd(game, ac, `S ${slow}`);
-          else if (loose && ac.tSpd < K.ILS_MAX_SPD) this.cmd(game, ac, `S ${K.ILS_MAX_SPD}`);   // 進入中なので ILS に乗れる速さまで
+          // 段階的に落とす: まず 180kt (ILS 上は 170kt)、大きく詰まっていれば 160kt (ILS 上は 150kt)
+          const veryTight = gap < TRAIL_SLOW || gapT < sep - 45;
+          const slow = veryTight ? (ac.ils ? 150 : 160) : (ac.ils ? 170 : 180);
+          if (tight && ac.tSpd > slow) {
+            this.cmd(game, ac, `S ${slow}`);
+            ac.autoSpdT = game.time + SPEED_EVERY;
+          } else if (loose && ac.tSpd < K.ILS_MAX_SPD && game.time >= (ac.autoSpdT || 0)) {
+            this.cmd(game, ac, `S ${K.ILS_MAX_SPD}`);   // 進入中なので ILS に乗れる速さまで (減速から 60 秒たってから)
+          }
         }
       }
     }
@@ -546,6 +588,8 @@ window.ATC = window.ATC || {};
         const hdg = [0, 45, -45, 90, -90].map((k) => Math.round(G.norm360(away + k)))
           .find((h) => list.every((x) => x === m || !this.conflict({ ...m, hdg: h }, x)));
         if (hdg == null) continue;
+        // すでにほぼその方位へ旋回中なら指示し直さない
+        if (this.held(game, m) && !m.directs.length && Math.abs(G.angleDiff(m.tHdg, hdg)) < 20) return;
         m.autoVec = null;
         m.autoHoldUntil = game.time + LEVEL_HOLD;
         this.cmd(game, m, `H ${String(hdg).padStart(3, '0')}`);
