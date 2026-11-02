@@ -531,7 +531,7 @@ window.ATC = window.ATC || {};
         else if (act === 'draft-undo') this.undoDraft();
         else if (act === 'draft-cancel') this.cancelDraft();
         else if (b.dataset.alt) {
-          const v = Math.max(2000, Math.round(ac.tAlt / 1000) * 1000 + Number(b.dataset.alt));
+          const v = Math.max(2000, Math.min(ATC.consts.MAX_ALT, Math.round(ac.tAlt / 1000) * 1000 + Number(b.dataset.alt)));
           this.send(`${ac.cs} A ${v}`);
         } else if (b.dataset.cmd) {
           this.send(`${ac.cs} ${b.dataset.cmd}`);
@@ -581,7 +581,9 @@ window.ATC = window.ATC || {};
       el.classList.remove('hidden');
       const key = [ac.cs, ac.state, !!ac.ils, !!ac.hold, ac.approach && ac.approach.id,
         ac.directs[0] && ac.directs[0].name, ac.plan.map((f) => f.name).join('-'),
-        this.draft ? 'draft:' + this.draft.fixes.map((f) => f.name).join('-') : ''].join('|');
+        this.draft ? 'draft:' + this.draft.fixes.map((f) => f.name).join('-') : '',
+        // 高度帯が変わったら、並べる高度・速度のボタンを入れ替える
+        JSON.stringify(this.panelChoices(ac))].join('|');
       if (key !== this.panelKey) {
         this.panelKey = key;
         el.innerHTML = this.panelHtml(ac);
@@ -614,6 +616,29 @@ window.ATC = window.ATC || {};
       return '';
     }
 
+    // 高度・速度のボタンに並べる値。今の高度帯に合わせて変える
+    //   巡航で抜けていく上空通過機: 進む方向に合った高度 (奇数/偶数) を今の指示高度を中心に 2000ft おき。±も 2000ft
+    //   FL140 より上を飛ぶ機体: 9000ft〜FL240、それ以外: 2000〜13000ft
+    //   速度: FL240 以上は巡航の 250〜300kt、10000ft 以上は 210〜300kt、それより下は 160〜250kt
+    panelChoices(ac) {
+      const g = this.game, K = ATC.consts;
+      const top = Math.max(ac.alt, ac.tAlt);
+      let alts, step = 1000;
+      if (ac.parity) {
+        const lo = Math.max(g.nearestExitAlt(ac, ac.exitAlt), Math.min(g.nearestExitAlt(ac, ac.tAlt) - 4000, K.MAX_ALT - 8000));
+        alts = Array.from({ length: 5 }, (_, k) => lo + k * 2000);
+        step = 2000;
+      } else if (top >= 14000) {
+        alts = [9000, 11000, 13000, 15000, 17000, 20000, 24000];
+      } else {
+        alts = [2000, 3000, 4000, 6000, 9000, 11000, 13000];
+      }
+      const spds = ac.alt >= 24000 ? [250, 260, 270, 280, 290, 300]
+        : ac.alt >= K.LOW_ALT ? [210, 230, 250, 280, 300]
+        : [160, 180, 210, 230, 250];
+      return { alts, step, spds };
+    }
+
     panelHtml(ac) {
       const g = this.game;
       const btns = (items) => items.map(([label, cmd, extra]) =>
@@ -630,13 +655,11 @@ window.ATC = window.ATC || {};
         html += `<div class="hint">ILSで最終進入中。速度の指示は5NMまで有効で、その後は進入速度へ減速します (3NMで170ktを超えていると復行)。方位や直行を指示するとILSから外れます。</div>`;
         return html;
       }
-      // 巡航で抜けていく上空通過機は、進む方向に合った高度 (奇数/偶数) を並べる
-      const alts = ac.parity
-        ? Array.from({ length: 5 }, (_, k) => g.nearestExitAlt(ac, ac.exitAlt) + k * 2000)
-        : [2000, 3000, 4000, 6000, 9000, 11000, 13000];
-      html += `<div class="row"><label>高度</label>${btns([['-1000', 'alt:-1000'], ['+1000', 'alt:1000'],
-        ...alts.map((v) => [ac.parity ? ATC.fmtAlt(v) : String(v / 1000) + 'k', `A ${v}`])])}</div>`;
-      html += `<div class="row"><label>速度</label>${btns([160, 180, 210, 250, 280].map((v) => [String(v), `S ${v}`]))}</div>`;
+      const { alts, step, spds } = this.panelChoices(ac);
+      const label = (v) => (v >= 14000 ? ATC.fmtAlt(v) : String(v / 1000) + 'k');
+      html += `<div class="row"><label>高度</label>${btns([[`-${step}`, `alt:-${step}`], [`+${step}`, `alt:${step}`],
+        ...alts.map((v) => [label(v), `A ${v}`])])}</div>`;
+      html += `<div class="row"><label>速度</label>${btns(spds.map((v) => [String(v), `S ${v}`]))}</div>`;
       html += `<div class="row"><label>旋回</label>${btns([['L30', 'L 30'], ['L10', 'L 10'], ['R10', 'R 10'], ['R30', 'R 30']])}</div>`;
       // 飛行計画の経路。押すとその Fix へ直行し、先は計画どおり
       if (this.draft && this.draft.ac === ac) {

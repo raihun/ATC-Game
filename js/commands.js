@@ -125,7 +125,7 @@ window.ATC = window.ATC || {};
     switch (act.type) {
       case 'alt': {
         if (ac.ils) return unable('ESTABLISHED ON ILS');
-        const v = Math.max(2000, Math.min(24000, Math.round(act.value / 100) * 100));
+        const v = Math.max(2000, Math.min(ATC.consts.MAX_ALT, Math.round(act.value / 100) * 100));
         ac.tAlt = v;
         const a = ATC.fmtAlt(v);
         if (ac.state !== 'air') return `AFTER DEPARTURE CLIMB ${a}`;

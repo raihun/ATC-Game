@@ -15,6 +15,7 @@ window.ATC = window.ATC || {};
     EXIT_RADIUS_NM: 3,
     MATCH_ZERO_NM: 5,    // 平均でこれだけ経路から外れると航跡一致 0%
     LOW_ALT: 10000,      // これ未満は 250kt 以下
+    MAX_ALT: 41000,      // 指示できる最高高度 (ジェット機の巡航の上限 FL410)
     LOW_ALT_SPD: 250,
     HOLD_SPD: 230,
     ILS_MAX_SPD: 210,    // これより速いと ILS に乗れない
@@ -342,7 +343,8 @@ window.ATC = window.ATC || {};
           while (parity && !parityOk(exitAlt, parity)) exitAlt += 1000;
           this.aircraft.push(makeAircraft({
             cs, type, kind: 'ovf', entry: s.name || s.plan[0].name,
-            x: entry.x, y: entry.y, alt, tAlt: alt, spd: 300, tSpd: 300,
+            // 速度は指示対気速度。FL290 以上の巡航はマッハ 0.8 前後 (対地速度 FL290 で約 420kt、FL390 で約 470kt) になるよう 290kt
+            x: entry.x, y: entry.y, alt, tAlt: alt, spd: alt >= 29000 ? 290 : 300, tSpd: alt >= 29000 ? 290 : 300,
             hdg: G.bearing(entry, s.plan[0]), plan: s.plan, directs: s.plan.slice(), ref: [entry, ...s.plan],
             exit: s.exitFix, exitAlt, exitAltMax: s.exitAltMax || null, parity,
           }));
@@ -368,7 +370,7 @@ window.ATC = window.ATC || {};
 
     // 出口の条件に合う高度のうち、alt にいちばん近いもの (コンピュータ管制用)
     nearestExitAlt(ac, alt) {
-      const hi = ac.exitAltMax ?? ac.exitAlt + 6000;
+      const hi = ac.exitAltMax ?? K.MAX_ALT;
       let best = null;
       for (let v = ac.exitAlt; v <= hi; v += 1000) {
         if (this.exitAltOk(ac, v) && (best == null || Math.abs(v - alt) < Math.abs(best - alt))) best = v;

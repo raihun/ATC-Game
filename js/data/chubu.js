@@ -168,11 +168,11 @@ ATC.maps.chubu = {
     // 関西から東京方面へ: 上昇しながら北側を東へ
     { name: 'KANTO', from: [260, 280], route: ['HEIAN', 'TALMI', 'HOUBA'],
       exit: 'HOUBA', exitAlt: 17000, alts: [13000, 14000, 15000], weight: 2 },
-    // 福岡・那覇方面と東京の間を、南側の高い高度で横切る (東行き・西行き)
+    // 福岡・那覇・アジア方面と東京の間を、巡航高度 (FL290〜FL390) のまま南側で横切る (東行きは奇数、西行きは偶数)
     { name: 'EAST', from: [250, 270], route: ['CARDS', 'COSTA', 'LAURA', 'ENSYU'],
-      exit: 'ENSYU', exitAlt: 20000, alts: [21000, 23000], weight: 1 },
+      exit: 'ENSYU', exitAlt: 29000, alts: [29000, 33000, 35000, 37000, 39000], weight: 1 },
     { name: 'WEST', from: [80, 100], route: ['SUZKI', 'ENSYU', 'LAURA', 'COSTA', 'CARDS'],
-      exit: 'CARDS', exitAlt: 20000, alts: [22000, 24000], weight: 1 },
+      exit: 'CARDS', exitAlt: 28000, alts: [28000, 32000, 34000, 36000, 38000], weight: 1 },
   ],
 
   configs: {

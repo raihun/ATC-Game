@@ -571,7 +571,7 @@ window.ATC = window.ATC || {};
           m.alt <= o.alt ? roundDown(o.alt - 1000) : roundUp(o.alt + 1000),
           climbing ? roundDown(m.alt) : descending ? roundUp(m.alt) : null,   // その場で止める
           roundUp(m.alt + 1000), roundDown(m.alt - 1000), roundUp(m.alt + 2000), roundDown(m.alt - 2000),
-        ].filter((v) => v != null && v >= 2000 && v <= 24000)
+        ].filter((v) => v != null && v >= 2000 && v <= K.MAX_ALT)
           // 出発機は降ろさない (上昇を止めるか、続けるだけ)
           .filter((v) => m.kind !== 'dep' || v >= roundDown(m.alt));
         const alt = cands.find((v) => this.safeAt(list, m, v));

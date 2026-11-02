@@ -217,12 +217,12 @@ ATC.maps.okayama = {
       route: { default: ['OMOGO'] } },
   ],
 
-  // 瀬戸内の上を抜けていく機体 (高い高度のまま。方向で奇数/偶数の高度)
+  // 瀬戸内の上を抜けていく機体 (福岡・那覇・アジア方面と関西・東京の間。巡航高度 FL290〜FL390 のまま。方向で奇数/偶数の高度)
   overflights: [
     { name: 'EAST', from: [250, 270], route: ['IWC', 'HGE', 'OYE', 'CHIZU'],
-      exit: 'CHIZU', exitAlt: 21000, alts: [21000, 23000], weight: 2 },
+      exit: 'CHIZU', exitAlt: 29000, alts: [29000, 33000, 35000, 37000, 39000], weight: 2 },
     { name: 'WEST', from: [60, 80], route: ['STE', 'KTE', 'MPE', 'IWC'],
-      exit: 'IWC', exitAlt: 20000, alts: [22000, 24000], weight: 2 },
+      exit: 'IWC', exitAlt: 28000, alts: [28000, 32000, 34000, 36000, 38000], weight: 2 },
   ],
 
   configs: {
