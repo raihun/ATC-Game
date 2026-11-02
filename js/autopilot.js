@@ -1,7 +1,9 @@
 // コンピュータ管制: プレイヤーの代わりに 2 秒ごとに状況を見て、普通のコマンドで指示を出す
 //   出発: 滑走路ごとに間隔をあけて離陸させ、出口高度まで上昇、出口 Fix へ向かわせる
 //   到着: 滑走路の手前 90NM ほどで着陸の順番を決め、前の機体との時間の間隔が足りない分は遠いうちに減速で吸収する。
-//         減速で吸収しきれない分だけ、STAR の途中の Fix で待機させる。順番が来て間隔が取れていれば進入許可
+//         減速で吸収しきれない分はレーダー誘導 (経路から斜めに外して、間に合うところで次の Fix へ戻す)、
+//         それでも足りない大きな遅れだけ STAR の途中の Fix で待機。STAR の Fix は飛ばさない (経路短縮はしない)。
+//         順番が来て間隔が取れていれば進入許可
 //         (それでも詰まったら、従来どおり STAR の終点で待機。高度を 1000ft ずつ積む)
 //   間隔: 同じ滑走路で詰まったら後ろを減速。90 秒先までに接近しそうな組は、片方の上昇・降下を止めるか 1000ft 離す
 window.ATC = window.ATC || {};
@@ -20,9 +22,13 @@ window.ATC = window.ATC || {};
   const MIN_SPD = 220;        // 遅れを吸収するときの最低速度(kt)。ILS に乗れる 210kt より速く (許可前に勝手に乗らないように)
   const CRUISE_SPD = 280;
   const CLEAR_DELAY_OK = 20;  // 残りの遅れがこれ以下なら進入許可を出してよい(秒)
-  const HOLD_MARGIN = 40;     // 減速で吸収できる量をこれ以上超える遅れがあれば、途中の Fix で待機(秒)
+  const HOLD_MARGIN = 40;     // 減速で吸収できる量をこれ以上超える遅れがあれば、レーダー誘導か途中の Fix で待機(秒)
+  const VECTOR_MAX = 480;     // レーダー誘導で吸収する遅れの上限。これより大きければ待機(秒)
+  const VECTOR_ANGLE = 50;    // 次の Fix への方位から外す角度(°)
+  const VECTOR_TIME = 900;    // レーダー誘導を続ける最長の時間(秒)
   const STACK_WITHIN = 60;    // 残り距離がこれ以下になったら待機用の高度へ降ろし始める(NM)
-  const TRAIL_SLOW = 7;       // 同じ滑走路で前との差がこれより詰まったら減速(NM)
+  const TRAIL_SLOW = 4.5;     // 同じ滑走路で前との距離の差がこれより詰まったら減速(NM)
+  const TRAIL_MARGIN = 15;    // 前との時間の差が、着陸の間隔よりこれ以上短ければ減速(秒)
   const TOO_CLOSE = 3;        // これより詰まったら後ろの機体を復行させる(NM)
   const DEP_INTERVAL = 90;    // 同じ滑走路から続けて離陸させる間隔(秒)
   const SAME_SID_INTERVAL = 120;   // 同じ出口へ向かう機体を続けて離陸させる間隔 (別の滑走路からでも)(秒)
@@ -96,8 +102,8 @@ window.ATC = window.ATC || {};
       // (上限のある通過機は、出口の 60NM 手前から降ろす)
       for (const ac of air) {
         if (!ac.exit || ac.state !== 'air') continue;
+        if (this.held(game, ac)) continue;   // 接近回避の旋回・高度を保っている間はそのまま
         if (!ac.directs.includes(ac.exit)) this.cmd(game, ac, ac.exit.name);
-        if (this.held(game, ac)) continue;
         if (ac.tAlt < ac.exitAlt) this.setAltIfSafe(game, ac, ac.exitAlt);
         else if (ac.exitAltMax != null && ac.tAlt > ac.exitAltMax && G.dist(ac, ac.exit) < 60) {
           this.setAltIfSafe(game, ac, ac.exitAltMax);
@@ -128,8 +134,10 @@ window.ATC = window.ATC || {};
       let d = 0, p = ac;
       const tailPts = [rw.faf, rw.bases[1], rw.bases[-1]];
       // 待機中は待機の Fix から (STAR の途中で待機していれば、その先の経路も足す)
+      // レーダー誘導中は、戻る先の Fix とその先の経路をたどる
       const hf = ac.hold && ac.hold.fix;
-      const pts = [...(hf ? [hf] : []), ...ac.directs.filter((f) => !tailPts.includes(f) && f !== hf)];
+      const vec = this.vectorPath(game, ac);
+      const pts = vec || [...(hf ? [hf] : []), ...ac.directs.filter((f) => !tailPts.includes(f) && f !== hf)];
       for (const f of pts) { d += G.dist(p, f); p = f; }
       for (const f of game.approachTail(rw, p === ac ? ac : p)) { d += G.dist(p, f); p = f; }
       return d + G.dist(p, rw.app) + rw.app.extra;
@@ -143,19 +151,20 @@ window.ATC = window.ATC || {};
     }
 
     // 遅れのない標準の速度 (滑走路までの残り距離ごと)。到着予定時刻の計算に使う
-    static nominalSpd(s) { return s < 8 ? 160 : s < 20 ? 210 : s < 40 ? 250 : CRUISE_SPD; }
+    // (進入許可を受けた機体は滑走路の 25NM 手前から ILS に乗れる 210kt まで落とす)
+    static nominalSpd(s) { return s < 8 ? 160 : s < 25 ? 210 : s < 40 ? 250 : CRUISE_SPD; }
 
     // 残り距離 d を標準の速度で飛んだときにかかる時間(秒)
     static eta(d) {
-      const edges = [0, 8, 20, 40, Infinity];
+      const edges = [0, 8, 25, 40, Infinity];
       let t = 0;
       for (let i = 0; i < 4 && d > edges[i]; i++) t += (Math.min(d, edges[i + 1]) - edges[i]) * 3600 / Auto.nominalSpd(edges[i]);
       return t;
     }
 
-    // 残り距離 d から最低速度で飛んで吸収できる遅れ(秒)。滑走路の 20NM 手前からは速度を変えない
+    // 残り距離 d から最低速度で飛んで吸収できる遅れ(秒)。滑走路の 25NM 手前からは速度を変えない
     static absorbable(d) {
-      const edges = [20, 40, Infinity];
+      const edges = [25, 40, Infinity];
       let t = 0;
       for (let i = 0; i < 2 && d > edges[i]; i++) {
         t += (Math.min(d, edges[i + 1]) - edges[i]) * 3600 * (1 / MIN_SPD - 1 / Auto.nominalSpd(edges[i]));
@@ -252,10 +261,69 @@ window.ATC = window.ATC || {};
       return info;
     }
 
-    // まだ進入許可のない機体の遅れを、減速と、STAR の途中の Fix での待機で吸収する
+    // レーダー誘導中の機体が戻る経路 (戻る先の Fix から)。誘導中でなければ null
+    vectorPath(game, ac) {
+      const v = ac.autoVec;
+      if (!v) return null;
+      // プレイヤーが別の指示を出したら誘導は終わり
+      if (ac.directs.length || ac.hold || ac.approach) { ac.autoVec = null; return null; }
+      return [v.target, ...v.rest].map((n) => game.fixes[n]).filter(Boolean);
+    }
+
+    // 経路に戻るときの Fix: いちばん近い Fix。ただしその次の Fix の方が、2 つの Fix の間より近ければ次へ (通り過ぎた Fix へ戻らない)
+    rejoinFix(game, ac) {
+      const plan = ac.plan.filter((f) => game.fixes[f.name]);
+      if (!plan.length) return null;
+      let i = 0;
+      for (let k = 1; k < plan.length; k++) if (G.dist(ac, plan[k]) < G.dist(ac, plan[i])) i = k;
+      if (i < plan.length - 1 && G.dist(ac, plan[i + 1]) < G.dist(plan[i], plan[i + 1])) i++;
+      return plan[i];
+    }
+
+    inside(game, p, margin) {
+      const e = game.extent;
+      return p.x > e.minX + margin && p.x < e.maxX - margin && p.y > e.minY + margin && p.y < e.maxY - margin;
+    }
+
+    // 経路から斜めに外す。戻る先は次の Fix (Fix を飛ばさない)。次の Fix まで 8NM 以上ある時だけ。
+    // 空域の内側に収まり、ほかの機体と接近しない側へ
+    startVector(game, ac, rw) {
+      const target = ac.directs[0];
+      if (!target || !game.fixes[target.name] || G.dist(ac, target) < 8) return false;
+      let best = null;
+      for (const side of [1, -1]) {
+        const hdg = Math.round(G.norm360(G.bearing(ac, target) + side * VECTOR_ANGLE));
+        const ahead = G.offset(ac, hdg, 15);
+        if (!this.inside(game, ahead, 6)) continue;
+        const probe = { ...ac, hdg };
+        if (this.flying.some((x) => x !== ac && this.conflict(probe, x))) continue;
+        // 滑走路から遠ざかる側を選ぶ (最終進入の近くへ寄せない)
+        const score = G.dist(ahead, rw);
+        if (!best || score > best.score) best = { hdg, score };
+      }
+      if (!best) return false;
+      const rest = ac.directs.slice(1).filter((f) => game.fixes[f.name]).map((f) => f.name);
+      this.cmd(game, ac, `H ${String(best.hdg).padStart(3, '0')}`);
+      ac.autoVec = { target: target.name, rest, until: game.time + VECTOR_TIME };
+      return true;
+    }
+
+    // まだ進入許可のない機体の遅れを、減速、レーダー誘導、STAR の途中の Fix での待機で吸収する
     absorbDelay(game, w) {
       const { ac, d, delay } = w;
       const room = Auto.absorbable(d);
+      if (ac.autoVec) {
+        // 減速で間に合うところまで遅れが減ったら (または時間切れ・空域の端が近づいたら) 次の Fix へ戻す
+        const v = ac.autoVec;
+        if (delay <= room + 10 || game.time > v.until || !this.inside(game, G.offset(ac, ac.hdg, 6), 3)) {
+          ac.autoVec = null;
+          this.cmd(game, ac, v.target);
+        } else {
+          const cap = ac.alt < K.LOW_ALT || ac.tAlt < K.LOW_ALT ? K.LOW_ALT_SPD : CRUISE_SPD;
+          if (Math.abs(ac.tSpd - Math.min(cap, MIN_SPD)) >= 10) this.cmd(game, ac, `S ${Math.min(cap, MIN_SPD)}`);
+        }
+        return;
+      }
       const fix = ac.hold ? ac.hold.fix : ac.directs[0];
       const last = ac.plan[ac.plan.length - 1];
       if (ac.hold) {
@@ -266,6 +334,7 @@ window.ATC = window.ATC || {};
         }
         return;
       }
+      if (delay > room + HOLD_MARGIN && delay - room <= VECTOR_MAX && d > 30 && this.startVector(game, ac, w.rw)) return;
       if (delay > room + HOLD_MARGIN && fix && fix !== last && game.fixes[fix.name] && G.dist(ac, fix) < 2.5 && d > 25) {
         // 同じ Fix で待機中の機体と 1000ft 以上離れた高度で待機する (空いた高度がなければ待機せず減速だけ)
         const taken = game.aircraft.filter((o) => o !== ac && o.hold && o.hold.fix === fix).map((o) => o.tAlt);
@@ -279,7 +348,7 @@ window.ATC = window.ATC || {};
           return;
         }
       }
-      if (d <= 20) return;
+      if (d <= 25) return;
       // 必要な分だけ遅くする: 1NM あたりに遅らせる時間を、最低速度で飛んだときの割合 f に合わせる
       const vnom = Auto.nominalSpd(d);
       const f = room > 0 ? Math.min(1, Math.max(0, delay / room)) : 0;
@@ -320,15 +389,22 @@ window.ATC = window.ATC || {};
       }
       for (const w of waiting) {
         const { ac, rw, d } = w;   // w.delay: 順番の枠までの遅れ(秒)、w.prev: 同じ列の 1 つ前
-        // プレイヤーがレーダー誘導した機体は、まず経路の終点へ戻す
-        if (!ac.directs.length && !ac.hold) {
-          const last = ac.plan[ac.plan.length - 1];
-          if (last && game.fixes[last.name]) this.cmd(game, ac, last.name);
+        // レーダー誘導された機体 (プレイヤーの誘導・進入許可の取り消し・接近回避の旋回の後) は、
+        // 経路の終点へ飛ばさず、近くにある先の Fix から経路に戻す
+        if (!ac.directs.length && !ac.hold && !ac.autoVec && !this.held(game, ac)) {
+          const f = this.rejoinFix(game, ac);
+          if (f) this.cmd(game, ac, f.name);
         }
         const laneKey = this.laneKey(game, rw);
         const lane = lanes[laneKey] || [];
         // 近くに自分より低い、まだ許可のない到着機がいれば先に行かせる (待機の積み重ねを下から降ろす)
-        const lowerFirst = waiting.some((o) => o.ac !== ac && o.ac.alt < ac.alt - 300 && G.dist(o.ac, ac) < 8);
+        const lower = waiting.find((o) => o.ac !== ac && o.ac.alt < ac.alt - 300 && G.dist(o.ac, ac) < 8);
+        const lowerFirst = !!lower;
+        // 下の機体が着陸の順番では後ろなら、順番を入れ替える (互いに待ち合って動けなくならないように)
+        if (lower && lower.ac.seqT != null && ac.seqT != null && lower.ac.seqT > ac.seqT &&
+            this.laneKey(game, lower.rw) === this.laneKey(game, rw)) {
+          [ac.seqT, lower.ac.seqT] = [lower.ac.seqT, ac.seqT];
+        }
         // 進入許可を出すと FAF の高度まで降りるので、その降下が安全な時だけ
         const descentSafe = this.safeAt(this.flying, ac, game.approachTargetAlt(ac, rw));
         // 復行・進入中止の直後 (60秒) は許可を出し直さない
@@ -337,7 +413,7 @@ window.ATC = window.ATC || {};
         const turn = ac.seqT != null && (!w.prev || w.prev.ac.approach || w.prev.ac.ils) && w.delay <= CLEAR_DELAY_OK;
         // STAR の終点が遠い空港 (高松の POPAI など) もあるので、終点の近くや終点での待機中は距離によらず
         const near = d < CLEAR_WITHIN || (ac.hold && !ac.autoHeld) || ac.directs.length <= 1;
-        if (near && settled && turn && !lowerFirst && descentSafe && lane.every((o) => Math.abs(o.d - d) >= MIN_SPACING)) {
+        if (near && settled && turn && !ac.autoVec && !lowerFirst && descentSafe && lane.every((o) => Math.abs(o.d - d) >= MIN_SPACING)) {
           if (ac.hold) ac.autoHeld = false;
           this.cmd(game, ac, `ILS ${rw.id}`);
           if (ac.approach) {
@@ -365,25 +441,39 @@ window.ATC = window.ATC || {};
         this.setAltIfSafe(game, ac, ac.autoStack);
       }
 
-      // 同じ滑走路で前の機体に詰まったら減速、十分離れたら戻す
+      // 接近回避で旋回させた進入許可済みの機体は、旋回を保つ時間が過ぎたら自分で最終進入へ回り込ませる
+      for (const ac of arr) {
+        if (ac.approach && !ac.ils && !ac.directs.length && !ac.autoFinal && !this.held(game, ac)) {
+          ac.autoFinal = true;
+          ac.finalPhase = null;
+        }
+      }
+
+      // 同じ滑走路で前の機体に詰まったら減速、十分離れたら戻す。
+      // 間隔は順番づけと同じく時間で見る (標準の速度で飛んだときの到着時刻の差。滑走路に近い前の機体ほど遅いので、距離だけだと早く減速しすぎる)
       for (const lane of Object.values(lanes)) {
         for (let i = 1; i < lane.length; i++) {
           const { ac, d } = lane[i];
           const gap = d - lane[i - 1].d;
+          const sep = this.separation(game, ac.ils || ac.approach);
+          const gapT = Auto.eta(d) - Auto.eta(lane[i - 1].d);
+          const tight = gap < TRAIL_SLOW || gapT < sep - TRAIL_MARGIN;
+          const loose = gap > TRAIL_SLOW + 2 && gapT > sep;
           // 最後の手段: 詰まりすぎたら復行 (ILS 上) か進入許可の取り消し。列に並び直させる
-          if (gap < TOO_CLOSE) {
+          // (自分で最終進入へ回り込み中の機体は残り距離が見積もりなので、実際に前の機体が近い時だけ)
+          const near = ac.ils || G.dist(ac, lane[i - 1].ac) < 5;
+          if (gap < TOO_CLOSE && near) {
+            const onIls = !!ac.ils;
             this.cmd(game, ac, 'GA');
+            // 進入許可を取り消した機体は、遅いままだと許可なしで別の ILS に乗ってしまうので速度を上げておく
+            if (!onIls) this.cmd(game, ac, `S ${MIN_SPD}`);
             lane.splice(i, 1);
             i--;
             continue;
           }
-          if (ac.ils) {
-            if (gap < TRAIL_SLOW && ac.tSpd > 150) this.cmd(game, ac, 'S 150');
-          } else if (gap < TRAIL_SLOW && ac.tSpd > 160) {
-            this.cmd(game, ac, 'S 160');
-          } else if (gap > TRAIL_SLOW + 4 && ac.tSpd < K.ILS_MAX_SPD) {
-            this.cmd(game, ac, `S ${K.ILS_MAX_SPD}`);   // 進入中なので ILS に乗れる速さまで
-          }
+          const slow = ac.ils ? 150 : 160;
+          if (tight && ac.tSpd > slow) this.cmd(game, ac, `S ${slow}`);
+          else if (loose && ac.tSpd < K.ILS_MAX_SPD) this.cmd(game, ac, `S ${K.ILS_MAX_SPD}`);   // 進入中なので ILS に乗れる速さまで
         }
       }
     }
@@ -446,6 +536,19 @@ window.ATC = window.ATC || {};
         if (alt == null) continue;
         m.autoHoldUntil = game.time + LEVEL_HOLD;
         this.setAlt(game, m, alt);
+        return;
+      }
+      // 高度で分けられなければ (相手が ILS 上で、こちらも上げ下げできないなど) 旋回で離す。
+      // 相手から遠ざかる方位とその ±45° のうち、ほかの全機と接近しないもの
+      for (const [m, o] of order) {
+        if (m.ils || m.state !== 'air') continue;
+        const away = G.bearing(o, m);
+        const hdg = [0, 45, -45, 90, -90].map((k) => Math.round(G.norm360(away + k)))
+          .find((h) => list.every((x) => x === m || !this.conflict({ ...m, hdg: h }, x)));
+        if (hdg == null) continue;
+        m.autoVec = null;
+        m.autoHoldUntil = game.time + LEVEL_HOLD;
+        this.cmd(game, m, `H ${String(hdg).padStart(3, '0')}`);
         return;
       }
     }
